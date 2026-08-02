@@ -1,0 +1,2 @@
+{"data":{"authenticated":false,"has_auth_header_or_cookie":false,"ms":0,"needs_bootstrap":false},"hypothesisId":"E","location":"settings_routes.rs:auth_status","message":"auth_status_served","runId":"pre-fix","sessionId":"72ff64","timestamp":1785657081267}
+{"data":{"authenticated":false,"has_auth_header_or_cookie":false,"ms":0,"needs_bootstrap":false},"hypothesisId":"E","location":"settings_routes.rs:auth_status","message":"auth_status_served","runId":"pre-fix","sessionId":"72ff64","timestamp":1785657132078}

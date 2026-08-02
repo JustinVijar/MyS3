@@ -1,6 +1,6 @@
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
@@ -9,10 +9,14 @@ use qrcode::{Color, QrCode};
 use rust_embed::Embed;
 use serde::Deserialize;
 use serde::Serialize;
+use tokio_util::io::ReaderStream;
 
 use crate::db::models::CrudAction;
 use crate::db::repository;
 use crate::network::wireguard::{peer_config_snippet, WgSnapshot};
+use crate::server::folder_archive::{
+    build_archive, filter_archive_entries, folder_download_basename, ArchiveFormat, TempArchive,
+};
 use crate::server::keys::{normalize_folder_prefix, normalize_object_key};
 use crate::server::s3_routes::{
     delete_object_keyed_in_bucket, get_object_keyed, put_object_keyed_in_bucket,
@@ -33,6 +37,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/v1/objects/list", get(objects_list))
         .route("/api/v1/folders", axum::routing::delete(delete_folder))
         .route("/api/v1/folders/rename", post(rename_folder))
+        .route("/api/v1/folders/archive", get(folder_archive))
         // axum 0.7 catch-all: /*key must be the final path segment.
         .route(
             "/api/v1/objects/preview-video/*key",
@@ -112,11 +117,18 @@ struct ListQuery {
     delimiter: String,
     search: Option<String>,
     bucket: Option<String>,
+    /// Skip this many folder+object entries (folders first).
+    #[serde(default)]
+    offset: i64,
+    /// Max entries to return. `0` / omitted → default page size for lazy explorer.
+    limit: Option<i64>,
 }
 
 fn default_delimiter() -> String {
     "/".to_string()
 }
+
+const DEFAULT_LIST_LIMIT: i64 = 50;
 
 async fn objects_list(
     State(state): State<AppState>,
@@ -130,12 +142,16 @@ async fn objects_list(
     if let Err(r) = require_bucket_perm(&state, auth.id(), bucket_id, CrudAction::Read).await {
         return r;
     }
+    let limit = q.limit.unwrap_or(DEFAULT_LIST_LIMIT).clamp(1, 500);
+    let offset = q.offset.max(0);
     match repository::list_objects_with_prefix(
         &state.db,
         &q.prefix,
         &q.delimiter,
         q.search.as_deref(),
         Some(bucket_id),
+        offset,
+        limit,
     )
     .await
     {
@@ -182,6 +198,91 @@ struct RenameFolderBody {
     bucket: Option<String>,
     from_prefix: String,
     to_prefix: String,
+}
+
+#[derive(Deserialize)]
+struct FolderArchiveQuery {
+    bucket: Option<String>,
+    prefix: String,
+    format: String,
+}
+
+async fn folder_archive(
+    State(state): State<AppState>,
+    auth: AuthAccount,
+    Query(q): Query<FolderArchiveQuery>,
+) -> Response {
+    let prefix = match normalize_folder_prefix(&q.prefix) {
+        Ok(p) => p,
+        Err(msg) => return (StatusCode::BAD_REQUEST, msg).into_response(),
+    };
+    let format = match ArchiveFormat::parse(&q.format) {
+        Ok(f) => f,
+        Err(msg) => return (StatusCode::BAD_REQUEST, msg).into_response(),
+    };
+    let (bucket_id, _) = match resolve_bucket_id(&state, q.bucket.as_deref()).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    if let Err(r) = require_bucket_perm(&state, auth.id(), bucket_id, CrudAction::Read).await {
+        return r;
+    }
+
+    let records = match repository::list_keys_under_prefix(&state.db, bucket_id, &prefix).await {
+        Ok(rows) => rows,
+        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    };
+    let entries = filter_archive_entries(&state.engine, &prefix, &records);
+    if entries.is_empty() {
+        return (StatusCode::BAD_REQUEST, "folder is empty").into_response();
+    }
+
+    let out_path = match build_archive(&state.engine, format, entries).await {
+        Ok(p) => p,
+        Err(err) => {
+            let msg = err.to_string();
+            let status = if msg.contains("folder is empty") {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            return (status, msg).into_response();
+        }
+    };
+
+    let archive = match TempArchive::open(out_path).await {
+        Ok(a) => a,
+        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    };
+    let len = match archive.len().await {
+        Ok(n) => n,
+        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    };
+
+    let basename = folder_download_basename(&prefix)
+        .chars()
+        .map(|c| if c == '"' || c == '\\' || c == '/' { '_' } else { c })
+        .collect::<String>();
+    let filename = format!("{basename}.{}", format.extension());
+    let disposition = format!("attachment; filename=\"{filename}\"");
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static(format.content_type()),
+    );
+    headers.insert(
+        header::CONTENT_LENGTH,
+        HeaderValue::from_str(&len.to_string()).unwrap_or(HeaderValue::from_static("0")),
+    );
+    headers.insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_str(&disposition)
+            .unwrap_or(HeaderValue::from_static("attachment")),
+    );
+
+    let stream = ReaderStream::new(archive);
+    (headers, Body::from_stream(stream)).into_response()
 }
 
 async fn rename_folder(

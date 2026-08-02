@@ -7,12 +7,17 @@ use chrono::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::cluster::outbox;
-use crate::db::models::{CrudAction, CrudPerms, RetentionUnit};
+use crate::config::{persist_storage_root, resolve_storage_path};
+use crate::db::models::{CrudAction, CrudPerms, EtagType, QuotaMode, RetentionUnit};
 use crate::db::rbac;
 use crate::db::repository;
+use crate::db::repository::DEFAULT_NODE_ALLOCATED_BYTES;
+use crate::server::etag_rehash;
 use crate::server::session_auth::{
     require_bucket_perm, require_owner, resolve_bucket_id, AuthAccount, SESSION_COOKIE,
 };
+use crate::storage::reconcile;
+use crate::storage::relocate;
 use crate::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -29,6 +34,18 @@ pub fn router() -> Router<AppState> {
         .route(
             "/api/v1/buckets/:id/replication",
             get(get_bucket_replication).put(put_bucket_replication),
+        )
+        .route(
+            "/api/v1/buckets/:id/nodes",
+            get(list_bucket_nodes).post(add_bucket_node),
+        )
+        .route(
+            "/api/v1/buckets/:id/nodes/:node_id",
+            axum::routing::patch(patch_bucket_node).delete(delete_bucket_node),
+        )
+        .route(
+            "/api/v1/buckets/:id/etag",
+            axum::routing::put(put_bucket_etag),
         )
         .route(
             "/api/v1/accounts",
@@ -54,11 +71,24 @@ pub fn router() -> Router<AppState> {
             get(get_role_permissions).put(put_role_permissions),
         )
         .route(
+            "/api/v1/settings/storage",
+            get(get_storage_settings).put(put_storage_settings),
+        )
+        .route(
+            "/api/v1/settings/storage/integrity",
+            get(get_storage_integrity),
+        )
+        .route(
+            "/api/v1/settings/storage/integrity/reconcile",
+            post(post_storage_reconcile),
+        )
+        .route(
             "/api/v1/settings/recycle",
             get(get_recycle_settings).put(put_recycle_settings),
         )
         .route("/api/v1/recycle-bin", get(list_recycle_bin))
         .route("/api/v1/recycle-bin/purge", post(purge_recycle_items))
+        .route("/api/v1/recycle-bin/purge-all", post(purge_all_recycle_items))
         .route(
             "/api/v1/recycle-bin/:id/restore",
             post(restore_recycle_item),
@@ -277,6 +307,11 @@ struct BucketListItem {
     owner_account_id: Option<i64>,
     replicate_to_all: bool,
     can_edit_replication: bool,
+    etag_type: EtagType,
+    etag_rehash_status: Option<String>,
+    etag_rehash_processed: i64,
+    etag_rehash_total: i64,
+    etag_rehash_error: Option<String>,
 }
 
 async fn list_buckets(State(state): State<AppState>, auth: AuthAccount) -> Response {
@@ -307,6 +342,11 @@ async fn list_buckets(State(state): State<AppState>, auth: AuthAccount) -> Respo
                             owner_account_id: b.owner_account_id,
                             replicate_to_all: b.replicate_to_all,
                             can_edit_replication,
+                            etag_type: b.etag_type,
+                            etag_rehash_status: b.etag_rehash_status,
+                            etag_rehash_processed: b.etag_rehash_processed,
+                            etag_rehash_total: b.etag_rehash_total,
+                            etag_rehash_error: b.etag_rehash_error,
                         });
                     }
                     Ok(false) => {}
@@ -358,8 +398,28 @@ async fn create_bucket(
         Ok(n) => n,
         Err(msg) => return (StatusCode::BAD_REQUEST, msg).into_response(),
     };
-    match rbac::create_bucket(&state.db, name, auth.id()).await {
-        Ok(b) => (StatusCode::CREATED, Json(b)).into_response(),
+    match rbac::create_bucket(
+        &state.db,
+        name,
+        auth.id(),
+        state.config.default_etag_type,
+    )
+    .await
+    {
+        Ok(b) => {
+            if let Err(err) = repository::assign_bucket_node(
+                &state.db,
+                b.id,
+                &state.config.node_id,
+                DEFAULT_NODE_ALLOCATED_BYTES,
+                QuotaMode::Soft,
+            )
+            .await
+            {
+                return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
+            }
+            (StatusCode::CREATED, Json(b)).into_response()
+        }
         Err(err) => {
             let msg = err.to_string();
             if msg.contains("UNIQUE") {
@@ -533,11 +593,611 @@ async fn put_bucket_replication(
     )
     .await
     {
+        Ok(()) => {
+            // Keep local node assigned after legacy replication edits.
+            let _ = repository::ensure_bucket_node_assignment(
+                &state.db,
+                id,
+                &state.config.node_id,
+                DEFAULT_NODE_ALLOCATED_BYTES,
+                QuotaMode::Soft,
+            )
+            .await;
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Err(err) => {
+            let msg = err.to_string();
+            if msg.contains("not found") {
+                (StatusCode::NOT_FOUND, msg).into_response()
+            } else {
+                (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response()
+            }
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct BucketNodeItem {
+    id: String,
+    endpoint: String,
+    is_local: bool,
+    allocated_bytes: i64,
+    quota_mode: QuotaMode,
+    used_bytes: i64,
+}
+
+#[derive(Serialize)]
+struct BucketNodesView {
+    nodes: Vec<BucketNodeItem>,
+    available: Vec<PeerDirItem>,
+    used_bytes: i64,
+    etag_type: EtagType,
+    etag_rehash_status: Option<String>,
+    etag_rehash_processed: i64,
+    etag_rehash_total: i64,
+    etag_rehash_error: Option<String>,
+    local_storage_path: String,
+}
+
+#[derive(Deserialize)]
+struct PutBucketEtagBody {
+    etag_type: EtagType,
+    /// `new_only` | `recalculate_all`
+    apply: String,
+}
+
+#[derive(Serialize)]
+struct BucketEtagView {
+    etag_type: EtagType,
+    etag_rehash_status: Option<String>,
+    etag_rehash_processed: i64,
+    etag_rehash_total: i64,
+    etag_rehash_error: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct AddBucketNodeBody {
+    /// Existing peer id, or optional override when registering via `endpoint`.
+    #[serde(default)]
+    node_id: Option<String>,
+    /// Peer gRPC endpoint URL (`host:port` or `http(s)://host:port`).
+    #[serde(default)]
+    endpoint: Option<String>,
+    /// Allocation in whole GiB (converted to bytes server-side).
+    allocated_gb: f64,
+    #[serde(default = "default_quota_mode")]
+    quota_mode: QuotaMode,
+}
+
+fn default_quota_mode() -> QuotaMode {
+    QuotaMode::Soft
+}
+
+/// Parse a pasted peer URL into `(host:port, suggested_node_id)`.
+fn parse_peer_endpoint(raw: &str) -> Result<(String, String), &'static str> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("endpoint is required");
+    }
+    let without_scheme = trimmed
+        .strip_prefix("https://")
+        .or_else(|| trimmed.strip_prefix("http://"))
+        .or_else(|| trimmed.strip_prefix("grpc://"))
+        .unwrap_or(trimmed);
+    let hostport = without_scheme.split('/').next().unwrap_or("").trim();
+    if hostport.is_empty() {
+        return Err("invalid peer endpoint");
+    }
+    // Bracketed IPv6: [addr]:port or [addr]
+    let (host, port) = if hostport.starts_with('[') {
+        let end = hostport.find(']').ok_or("invalid IPv6 endpoint")?;
+        let host = &hostport[..=end];
+        let rest = &hostport[end + 1..];
+        let port = if let Some(p) = rest.strip_prefix(':') {
+            if p.is_empty() || !p.chars().all(|c| c.is_ascii_digit()) {
+                return Err("invalid peer port");
+            }
+            p
+        } else if rest.is_empty() {
+            "50051"
+        } else {
+            return Err("invalid IPv6 endpoint");
+        };
+        (host.to_string(), port.to_string())
+    } else if let Some((h, p)) = hostport.rsplit_once(':') {
+        if h.is_empty() || p.is_empty() || !p.chars().all(|c| c.is_ascii_digit()) {
+            return Err("invalid peer endpoint");
+        }
+        (h.to_string(), p.to_string())
+    } else {
+        (hostport.to_string(), "50051".to_string())
+    };
+    if host.is_empty() {
+        return Err("invalid peer host");
+    }
+    let endpoint = format!("{host}:{port}");
+    let host_for_id = host.trim_matches(|c| c == '[' || c == ']');
+    let suggested_id = format!(
+        "node-{}",
+        host_for_id
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect::<String>()
+            .trim_matches('-')
+            .to_ascii_lowercase()
+    );
+    if suggested_id == "node-" || suggested_id.is_empty() {
+        return Err("could not derive node id from endpoint");
+    }
+    Ok((endpoint, suggested_id))
+}
+
+#[derive(Deserialize)]
+struct PatchBucketNodeBody {
+    allocated_gb: Option<f64>,
+    quota_mode: Option<QuotaMode>,
+}
+
+fn gb_to_bytes(gb: f64) -> Result<i64, &'static str> {
+    if !gb.is_finite() || gb <= 0.0 {
+        return Err("allocated_gb must be a positive number");
+    }
+    let bytes = (gb * 1024.0 * 1024.0 * 1024.0).round();
+    if bytes > i64::MAX as f64 {
+        return Err("allocated_gb is too large");
+    }
+    Ok(bytes as i64)
+}
+
+async fn list_bucket_nodes(
+    State(state): State<AppState>,
+    auth: AuthAccount,
+    Path(id): Path<i64>,
+) -> Response {
+    if let Err(r) = require_replication_editor(&state, auth.id(), id).await {
+        return r;
+    }
+    // Ensure local node is present for the UI.
+    let _ = repository::ensure_bucket_node_assignment(
+        &state.db,
+        id,
+        &state.config.node_id,
+        DEFAULT_NODE_ALLOCATED_BYTES,
+        QuotaMode::Soft,
+    )
+    .await;
+
+    let used_bytes = match repository::bucket_used_bytes(&state.db, id).await {
+        Ok(v) => v,
+        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    };
+    let assignments = match repository::list_bucket_node_assignments(&state.db, id).await {
+        Ok(v) => v,
+        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    };
+    let peers = match repository::list_active_peers(&state.db).await {
+        Ok(v) => v,
+        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    };
+    let peer_map: std::collections::HashMap<_, _> = peers
+        .iter()
+        .map(|p| (p.id.clone(), p.wireguard_endpoint.clone()))
+        .collect();
+    let assigned_ids: std::collections::HashSet<_> =
+        assignments.iter().map(|a| a.peer_id.clone()).collect();
+
+    let nodes: Vec<BucketNodeItem> = assignments
+        .into_iter()
+        .map(|a| BucketNodeItem {
+            is_local: a.peer_id == state.config.node_id,
+            endpoint: peer_map
+                .get(&a.peer_id)
+                .cloned()
+                .unwrap_or_default(),
+            id: a.peer_id,
+            allocated_bytes: a.allocated_bytes,
+            quota_mode: a.quota_mode,
+            used_bytes,
+        })
+        .collect();
+
+    let available: Vec<PeerDirItem> = peers
+        .into_iter()
+        .filter(|p| !assigned_ids.contains(&p.id))
+        .map(|p| PeerDirItem {
+            id: p.id,
+            endpoint: p.wireguard_endpoint,
+        })
+        .collect();
+
+    let bucket = match rbac::get_bucket_by_id(&state.db, id).await {
+        Ok(Some(b)) => b,
+        Ok(None) => return (StatusCode::NOT_FOUND, "bucket not found").into_response(),
+        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    };
+
+    let local_storage_path = relocate::absolute_display(&state.config.storage_root)
+        .display()
+        .to_string();
+
+    Json(BucketNodesView {
+        nodes,
+        available,
+        used_bytes,
+        etag_type: bucket.etag_type,
+        etag_rehash_status: bucket.etag_rehash_status,
+        etag_rehash_processed: bucket.etag_rehash_processed,
+        etag_rehash_total: bucket.etag_rehash_total,
+        etag_rehash_error: bucket.etag_rehash_error,
+        local_storage_path,
+    })
+    .into_response()
+}
+
+#[derive(Serialize)]
+struct StorageSettingsView {
+    path: String,
+    absolute_path: String,
+    /// Active DB objects (includes `.keep` markers).
+    object_count: i64,
+    /// Alias for UI: active DB object count including `.keep`.
+    db_object_count: i64,
+    /// Files currently under `objects/` on disk.
+    disk_file_count: i64,
+    used_bytes: i64,
+    has_data: bool,
+    node_id: String,
+}
+
+#[derive(Deserialize)]
+struct PutStorageBody {
+    path: String,
+    /// `move` | `fresh`
+    mode: String,
+}
+
+#[derive(Serialize)]
+struct StorageChangeResponse {
+    restart_required: bool,
+    absolute_path: String,
+    mode: String,
+}
+
+async fn get_storage_settings(State(state): State<AppState>, auth: AuthAccount) -> Response {
+    if let Err(r) = require_owner(&state, auth.id()).await {
+        return r;
+    }
+    let (used_bytes, object_count, _) = match repository::stats(&state.db).await {
+        Ok(v) => v,
+        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    };
+    let disk_file_count = match reconcile::count_disk_files(state.engine.objects_dir()).await {
+        Ok(n) => n,
+        Err(_) => 0,
+    };
+    let objects_nonempty = disk_file_count > 0;
+    let absolute = relocate::absolute_display(&state.config.storage_root);
+    Json(StorageSettingsView {
+        path: state.config.storage_root.display().to_string(),
+        absolute_path: absolute.display().to_string(),
+        object_count,
+        db_object_count: object_count,
+        disk_file_count,
+        used_bytes,
+        has_data: object_count > 0 || used_bytes > 0 || objects_nonempty,
+        node_id: state.config.node_id.clone(),
+    })
+    .into_response()
+}
+
+async fn get_storage_integrity(State(state): State<AppState>, auth: AuthAccount) -> Response {
+    if let Err(r) = require_owner(&state, auth.id()).await {
+        return r;
+    }
+    match reconcile::inspect(&state.db, &state.engine).await {
+        Ok(report) => Json(report).into_response(),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    }
+}
+
+async fn post_storage_reconcile(State(state): State<AppState>, auth: AuthAccount) -> Response {
+    if let Err(r) = require_owner(&state, auth.id()).await {
+        return r;
+    }
+    match reconcile::reconcile(&state.db, &state.engine).await {
+        Ok(report) => Json(report).into_response(),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    }
+}
+
+async fn put_storage_settings(
+    State(state): State<AppState>,
+    auth: AuthAccount,
+    Json(body): Json<PutStorageBody>,
+) -> Response {
+    if let Err(r) = require_owner(&state, auth.id()).await {
+        return r;
+    }
+    let mode = body.mode.trim();
+    if mode != "move" && mode != "fresh" {
+        return (StatusCode::BAD_REQUEST, "mode must be move or fresh").into_response();
+    }
+    let new_path = match resolve_storage_path(&body.path) {
+        Ok(p) => p,
+        Err(err) => return (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+    };
+    let current = relocate::absolute_display(&state.config.storage_root);
+    if new_path == current {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+
+    let (used_bytes, object_count, _) = match repository::stats(&state.db).await {
+        Ok(v) => v,
+        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    };
+    let objects_nonempty = match relocate::dir_nonempty(state.engine.objects_dir()).await {
+        Ok(v) => v,
+        Err(_) => false,
+    };
+    let has_data = object_count > 0 || used_bytes > 0 || objects_nonempty;
+
+    if mode == "move" {
+        if let Ok(true) = relocate::dir_nonempty(&new_path).await {
+            return (
+                StatusCode::CONFLICT,
+                "destination already exists and is not empty",
+            )
+                .into_response();
+        }
+        // Close DB before moving the storage root (metadata.db lives inside it).
+        state.db.close().await;
+        if let Err(err) = relocate::relocate_storage_root(&current, &new_path).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
+        }
+    } else {
+        // Start fresh: leave old root untouched; create empty layout at destination.
+        if let Err(err) = relocate::ensure_storage_layout(&new_path).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
+        }
+        let _ = has_data; // client already confirmed when data exists
+    }
+
+    if let Err(err) = persist_storage_root(&new_path) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
+    }
+
+    // Give the response time to flush, then exit so the next start loads the new path.
+    tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_millis(750)).await;
+        std::process::exit(0);
+    });
+
+    (
+        StatusCode::ACCEPTED,
+        Json(StorageChangeResponse {
+            restart_required: true,
+            absolute_path: new_path.display().to_string(),
+            mode: mode.to_string(),
+        }),
+    )
+        .into_response()
+}
+
+async fn put_bucket_etag(
+    State(state): State<AppState>,
+    auth: AuthAccount,
+    Path(id): Path<i64>,
+    Json(body): Json<PutBucketEtagBody>,
+) -> Response {
+    if let Err(r) = require_replication_editor(&state, auth.id(), id).await {
+        return r;
+    }
+    let apply = body.apply.trim();
+    if apply != "new_only" && apply != "recalculate_all" {
+        return (
+            StatusCode::BAD_REQUEST,
+            "apply must be new_only or recalculate_all",
+        )
+            .into_response();
+    }
+
+    let bucket = match rbac::get_bucket_by_id(&state.db, id).await {
+        Ok(Some(b)) => b,
+        Ok(None) => return (StatusCode::NOT_FOUND, "bucket not found").into_response(),
+        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    };
+
+    if apply == "recalculate_all"
+        && bucket.etag_rehash_status.as_deref() == Some("running")
+    {
+        return (
+            StatusCode::CONFLICT,
+            "etag recalculation already running",
+        )
+            .into_response();
+    }
+
+    if let Err(err) = repository::set_bucket_etag_type(&state.db, id, body.etag_type).await {
+        let msg = err.to_string();
+        if msg.contains("not found") {
+            return (StatusCode::NOT_FOUND, msg).into_response();
+        }
+        return (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response();
+    }
+
+    if apply == "new_only" {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+
+    let total = match repository::count_active_objects_in_bucket(&state.db, id).await {
+        Ok(n) => n,
+        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    };
+    if let Err(err) = repository::begin_bucket_etag_rehash(&state.db, id, total).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
+    }
+
+    etag_rehash::spawn_bucket_rehash(state.clone(), id, body.etag_type);
+
+    let view = BucketEtagView {
+        etag_type: body.etag_type,
+        etag_rehash_status: Some("running".into()),
+        etag_rehash_processed: 0,
+        etag_rehash_total: total,
+        etag_rehash_error: None,
+    };
+    (StatusCode::ACCEPTED, Json(view)).into_response()
+}
+
+async fn add_bucket_node(
+    State(state): State<AppState>,
+    auth: AuthAccount,
+    Path(id): Path<i64>,
+    Json(body): Json<AddBucketNodeBody>,
+) -> Response {
+    if let Err(r) = require_replication_editor(&state, auth.id(), id).await {
+        return r;
+    }
+    let allocated_bytes = match gb_to_bytes(body.allocated_gb) {
+        Ok(b) => b,
+        Err(msg) => return (StatusCode::BAD_REQUEST, msg).into_response(),
+    };
+
+    let endpoint_raw = body
+        .endpoint
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let explicit_id = body
+        .node_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let node_id = if let Some(endpoint_raw) = endpoint_raw {
+        let (endpoint, suggested_id) = match parse_peer_endpoint(endpoint_raw) {
+            Ok(v) => v,
+            Err(msg) => return (StatusCode::BAD_REQUEST, msg).into_response(),
+        };
+        let node_id = explicit_id.unwrap_or(suggested_id.as_str()).to_string();
+        if node_id == state.config.node_id {
+            return (
+                StatusCode::BAD_REQUEST,
+                "cannot add the local node via peer URL",
+            )
+                .into_response();
+        }
+        let local_ep = state.config.grpc_bind_addr.to_string();
+        if endpoint == local_ep
+            || endpoint == format!("127.0.0.1:{}", state.config.grpc_bind_addr.port())
+            || endpoint == format!("localhost:{}", state.config.grpc_bind_addr.port())
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                "endpoint refers to this node",
+            )
+                .into_response();
+        }
+        if let Err(err) = repository::upsert_peer(&state.db, &node_id, &endpoint).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
+        }
+        node_id
+    } else {
+        let Some(node_id) = explicit_id else {
+            return (
+                StatusCode::BAD_REQUEST,
+                "endpoint or node_id is required",
+            )
+                .into_response();
+        };
+        if node_id == state.config.node_id {
+            return (
+                StatusCode::BAD_REQUEST,
+                "cannot add the local node again",
+            )
+                .into_response();
+        }
+        node_id.to_string()
+    };
+
+    match repository::assign_bucket_node(
+        &state.db,
+        id,
+        &node_id,
+        allocated_bytes,
+        body.quota_mode,
+    )
+    .await
+    {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(err) => {
             let msg = err.to_string();
             if msg.contains("not found") {
                 (StatusCode::NOT_FOUND, msg).into_response()
+            } else if msg.contains("must be") {
+                (StatusCode::BAD_REQUEST, msg).into_response()
+            } else {
+                (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response()
+            }
+        }
+    }
+}
+
+async fn patch_bucket_node(
+    State(state): State<AppState>,
+    auth: AuthAccount,
+    Path((id, node_id)): Path<(i64, String)>,
+    Json(body): Json<PatchBucketNodeBody>,
+) -> Response {
+    if let Err(r) = require_replication_editor(&state, auth.id(), id).await {
+        return r;
+    }
+    let allocated_bytes = match body.allocated_gb {
+        Some(gb) => match gb_to_bytes(gb) {
+            Ok(b) => Some(b),
+            Err(msg) => return (StatusCode::BAD_REQUEST, msg).into_response(),
+        },
+        None => None,
+    };
+    match repository::update_bucket_node(
+        &state.db,
+        id,
+        &node_id,
+        allocated_bytes,
+        body.quota_mode,
+    )
+    .await
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => {
+            let msg = err.to_string();
+            if msg.contains("not found") {
+                (StatusCode::NOT_FOUND, msg).into_response()
+            } else if msg.contains("must be") || msg.contains("no fields") {
+                (StatusCode::BAD_REQUEST, msg).into_response()
+            } else {
+                (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response()
+            }
+        }
+    }
+}
+
+async fn delete_bucket_node(
+    State(state): State<AppState>,
+    auth: AuthAccount,
+    Path((id, node_id)): Path<(i64, String)>,
+) -> Response {
+    if let Err(r) = require_replication_editor(&state, auth.id(), id).await {
+        return r;
+    }
+    match repository::remove_bucket_node(&state.db, id, &node_id, &state.config.node_id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => {
+            let msg = err.to_string();
+            if msg.contains("not found") {
+                (StatusCode::NOT_FOUND, msg).into_response()
+            } else if msg.contains("cannot remove") {
+                (StatusCode::CONFLICT, msg).into_response()
             } else {
                 (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response()
             }
@@ -1001,31 +1661,29 @@ struct RecycleListQuery {
     bucket: Option<String>,
 }
 
-async fn list_recycle_bin(
-    State(state): State<AppState>,
-    auth: AuthAccount,
-    Query(q): Query<RecycleListQuery>,
-) -> Response {
+/// Same visibility rules as GET /recycle-bin: optional bucket, else owner=all / non-owner=readable.
+async fn recycle_bin_bucket_filter(
+    state: &AppState,
+    auth: &AuthAccount,
+    bucket: Option<&str>,
+) -> Result<Option<Vec<i64>>, Response> {
     let is_owner = match rbac::account_is_owner(&state.db, auth.id()).await {
         Ok(v) => v,
-        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+        Err(err) => return Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()),
     };
 
-    let bucket_filter = if let Some(name) = q.bucket.as_deref() {
-        let (bid, _) = match resolve_bucket_id(&state, Some(name)).await {
-            Ok(v) => v,
-            Err(r) => return r,
-        };
-        if let Err(r) = require_bucket_perm(&state, auth.id(), bid, CrudAction::Read).await {
-            return r;
-        }
-        Some(vec![bid])
+    if let Some(name) = bucket {
+        let (bid, _) = resolve_bucket_id(state, Some(name)).await?;
+        require_bucket_perm(state, auth.id(), bid, CrudAction::Read).await?;
+        Ok(Some(vec![bid]))
     } else if is_owner {
-        None
+        Ok(None)
     } else {
         let buckets = match rbac::list_buckets(&state.db).await {
             Ok(b) => b,
-            Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+            Err(err) => {
+                return Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response());
+            }
         };
         let mut readable = Vec::new();
         for b in buckets {
@@ -1033,11 +1691,24 @@ async fn list_recycle_bin(
                 Ok(true) => readable.push(b.id),
                 Ok(false) => {}
                 Err(err) => {
-                    return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
+                    return Err(
+                        (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
+                    );
                 }
             }
         }
-        Some(readable)
+        Ok(Some(readable))
+    }
+}
+
+async fn list_recycle_bin(
+    State(state): State<AppState>,
+    auth: AuthAccount,
+    Query(q): Query<RecycleListQuery>,
+) -> Response {
+    let bucket_filter = match recycle_bin_bucket_filter(&state, &auth, q.bucket.as_deref()).await {
+        Ok(f) => f,
+        Err(r) => return r,
     };
 
     match repository::list_deleted_objects(&state.db, bucket_filter.as_deref()).await {
@@ -1154,6 +1825,41 @@ async fn purge_recycle_items(
     Json(PurgeResponse { deleted, failed }).into_response()
 }
 
+async fn purge_all_recycle_items(
+    State(state): State<AppState>,
+    auth: AuthAccount,
+    Query(q): Query<RecycleListQuery>,
+) -> Response {
+    let bucket_filter = match recycle_bin_bucket_filter(&state, &auth, q.bucket.as_deref()).await {
+        Ok(f) => f,
+        Err(r) => return r,
+    };
+
+    let rows = match repository::list_deleted_objects(&state.db, bucket_filter.as_deref()).await {
+        Ok(rows) => rows,
+        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    };
+
+    let mut deleted: u64 = 0;
+    let mut failed: Vec<i64> = Vec::new();
+
+    for obj in rows {
+        if require_bucket_perm(&state, auth.id(), obj.bucket_id, CrudAction::Delete)
+            .await
+            .is_err()
+        {
+            failed.push(obj.id);
+            continue;
+        }
+        match hard_purge_object(&state, obj.id).await {
+            Ok(()) => deleted += 1,
+            Err(_) => failed.push(obj.id),
+        }
+    }
+
+    Json(PurgeResponse { deleted, failed }).into_response()
+}
+
 pub async fn hard_purge_object(state: &AppState, id: i64) -> anyhow::Result<()> {
     let mut tx = state.db.begin().await?;
     let record = sqlx::query_as::<_, crate::db::models::ObjectRecord>(
@@ -1166,7 +1872,14 @@ pub async fn hard_purge_object(state: &AppState, id: i64) -> anyhow::Result<()> 
         tx.rollback().await?;
         anyhow::bail!("object not found");
     };
-    outbox::enqueue_delete_tx(&mut tx, record.id, &record.filepath, &record.etag).await?;
+    outbox::enqueue_delete_tx(
+        &mut tx,
+        record.id,
+        &record.filepath,
+        &record.etag,
+        &state.config.node_id,
+    )
+    .await?;
     sqlx::query(r#"DELETE FROM object WHERE id = ?1"#)
         .bind(record.id)
         .execute(&mut *tx)

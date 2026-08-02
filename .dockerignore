@@ -1,0 +1,9 @@
+.git
+.cursor
+target
+.data
+.data-*
+*.png
+*.log
+.DS_Store
+.mys3

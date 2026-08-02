@@ -14,6 +14,7 @@ use crate::storage::StorageEngine;
 pub async fn run_recycle_purge_worker(
     db: SqlitePool,
     engine: StorageEngine,
+    local_node_id: String,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let mut interval = tokio::time::interval(Duration::from_secs(60));
@@ -33,13 +34,17 @@ pub async fn run_recycle_purge_worker(
             break;
         }
 
-        if let Err(err) = purge_once(&db, &engine).await {
+        if let Err(err) = purge_once(&db, &engine, &local_node_id).await {
             warn!("recycle purge tick failed: {err:#}");
         }
     }
 }
 
-async fn purge_once(db: &SqlitePool, engine: &StorageEngine) -> anyhow::Result<()> {
+async fn purge_once(
+    db: &SqlitePool,
+    engine: &StorageEngine,
+    local_node_id: &str,
+) -> anyhow::Result<()> {
     let settings = rbac::get_settings(db).await?;
     let secs = settings
         .recycle_retention_unit
@@ -50,7 +55,14 @@ async fn purge_once(db: &SqlitePool, engine: &StorageEngine) -> anyhow::Result<(
     let expired = repository::list_expired_deleted_objects(db, cutoff).await?;
     for obj in expired {
         let mut tx = db.begin().await?;
-        outbox::enqueue_delete_tx(&mut tx, obj.id, &obj.filepath, &obj.etag).await?;
+        outbox::enqueue_delete_tx(
+            &mut tx,
+            obj.id,
+            &obj.filepath,
+            &obj.etag,
+            local_node_id,
+        )
+        .await?;
         sqlx::query(r#"DELETE FROM object WHERE id = ?1"#)
             .bind(obj.id)
             .execute(&mut *tx)

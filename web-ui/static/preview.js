@@ -162,6 +162,9 @@
   }
 
   function contentUrl(key) {
+    if (window.MyS3 && typeof window.MyS3.contentUrl === 'function') {
+      return window.MyS3.contentUrl(key);
+    }
     const bucket =
       window.MyS3 && typeof window.MyS3.getBucket === 'function'
         ? window.MyS3.getBucket()
@@ -184,13 +187,16 @@
   }
 
   function previewVideoUrl(key, height) {
+    const h = height == null ? selectedHeight() : height;
+    if (window.MyS3 && typeof window.MyS3.previewVideoUrl === 'function') {
+      return window.MyS3.previewVideoUrl(key, h);
+    }
     const bucket =
       window.MyS3 && typeof window.MyS3.getBucket === 'function'
         ? window.MyS3.getBucket()
         : 'storage';
     const params = new URLSearchParams();
     params.set('bucket', bucket || 'storage');
-    const h = height == null ? selectedHeight() : height;
     if (h && h !== 'original') params.set('height', String(h));
     else if (h === 'original') params.set('height', 'original');
     return (

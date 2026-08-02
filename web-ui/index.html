@@ -9,6 +9,7 @@
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/vendor/github-dark.min.css" />
   <link rel="stylesheet" href="/static/app.css" />
+  <link rel="stylesheet" href="/static/pager.css" />
 </head>
 <body>
   <div id="auth-gate" class="auth-gate" hidden>
@@ -63,6 +64,7 @@
       <a class="brand" href="#/explore/" id="brand-link">MyS3</a>
       <nav class="main-tabs" aria-label="Primary">
         <a class="tab active" href="#/explore/" id="tab-explore">Explorer</a>
+        <a class="tab" href="#/actions" id="tab-actions">Actions</a>
         <a class="tab" href="#/settings/accounts" id="tab-settings">Settings</a>
       </nav>
       <div class="topbar-meta">
@@ -72,12 +74,15 @@
     </header>
 
     <div id="view-explore" class="view explorer">
+      <div class="explorer-drop-overlay" id="explorer-drop-overlay" hidden aria-hidden="true">
+        Drop to upload here
+      </div>
       <nav class="breadcrumbs" id="breadcrumbs" aria-label="Location"></nav>
 
       <div class="toolbar">
         <label class="search-wrap">
           <span class="sr-only">Search objects</span>
-          <input type="search" id="search" placeholder="Search objects…" autocomplete="off" />
+          <input type="search" id="search" placeholder="Search all folders and files…" autocomplete="off" />
         </label>
         <div class="toolbar-actions">
           <input type="file" id="file-input" multiple hidden />
@@ -142,6 +147,62 @@
           <tbody id="listing-body"></tbody>
         </table>
         <p class="empty" id="empty-state" hidden>No objects here. Upload a file to get started.</p>
+        <div class="explorer-scroll-footer" id="explorer-scroll-footer" hidden>
+          <div class="explorer-scroll-spinner" id="explorer-scroll-spinner" hidden aria-hidden="true"></div>
+          <p class="explorer-scroll-status" id="explorer-scroll-status" aria-live="polite"></p>
+        </div>
+      </div>
+      <div id="search-loading" class="search-loading" hidden aria-live="polite">
+        <div class="search-loading-track"><i id="search-loading-bar"></i></div>
+        <span class="search-loading-label">Searching…</span>
+      </div>
+    </div>
+
+    <div id="view-actions" class="view actions" hidden>
+      <div class="actions-body">
+        <p class="status" id="actions-status" hidden></p>
+
+        <section class="actions-section" aria-labelledby="actions-transfers-title">
+          <div class="panel-head">
+            <h2 id="actions-transfers-title">Transfers</h2>
+            <p>Current and recent uploads and downloads on this device.</p>
+          </div>
+          <div class="actions-toolbar">
+            <div class="filter-bar" id="actions-transfer-filter" role="group" aria-label="Filter transfers">
+              <button type="button" class="filter-chip active" data-transfer-filter="all">All</button>
+              <button type="button" class="filter-chip" data-transfer-filter="upload">Uploads</button>
+              <button type="button" class="filter-chip" data-transfer-filter="download">Downloads</button>
+            </div>
+            <button type="button" class="btn ghost" id="actions-clear-history">Clear history</button>
+          </div>
+          <div class="table-wrap tight">
+            <table class="actions-transfers-table">
+              <thead>
+                <tr>
+                  <th>Kind</th>
+                  <th>Name</th>
+                  <th>Bucket</th>
+                  <th>Status</th>
+                  <th>Size</th>
+                  <th>When</th>
+                </tr>
+              </thead>
+              <tbody id="actions-transfers-body"></tbody>
+            </table>
+            <p class="empty" id="actions-transfers-empty" hidden>No transfers yet.</p>
+          </div>
+          <div class="pager" id="actions-transfers-pager" hidden></div>
+        </section>
+
+        <section class="actions-section" aria-labelledby="actions-etag-title">
+          <div class="panel-head">
+            <h2 id="actions-etag-title">ETag recalculation</h2>
+            <p>Change the hashing algorithm per bucket and optionally rehash existing objects.</p>
+          </div>
+          <div id="actions-etag-list" class="actions-etag-list"></div>
+          <p class="empty" id="actions-etag-empty" hidden>No buckets available.</p>
+          <div class="pager" id="actions-etag-pager" hidden></div>
+        </section>
       </div>
     </div>
 
@@ -150,6 +211,7 @@
         <a href="#/settings/accounts" data-panel="accounts">Accounts</a>
         <a href="#/settings/roles" data-panel="roles">Roles</a>
         <a href="#/settings/buckets" data-panel="buckets">Buckets</a>
+        <a href="#/settings/storage" data-panel="storage">Storage</a>
         <a href="#/settings/recycle" data-panel="recycle">Recycle bin</a>
       </nav>
       <div class="settings-body">
@@ -177,6 +239,7 @@
               <tbody id="accounts-body"></tbody>
             </table>
           </div>
+          <div class="pager" id="accounts-pager" hidden></div>
         </section>
 
         <section id="panel-roles" class="settings-panel" hidden>
@@ -189,6 +252,7 @@
             <button type="button" class="btn primary" id="create-role-btn">Create role</button>
           </div>
           <div class="roles-list" id="roles-list"></div>
+          <div class="pager" id="roles-pager" hidden></div>
           <div class="perm-matrix" id="perm-matrix"></div>
         </section>
 
@@ -202,6 +266,64 @@
             <button type="button" class="btn primary" id="create-bucket-btn">Create bucket</button>
           </div>
           <ul class="bucket-list" id="bucket-list"></ul>
+          <div class="pager" id="buckets-pager" hidden></div>
+        </section>
+
+        <section id="panel-storage" class="settings-panel" hidden>
+          <div class="panel-head">
+            <h2>This node’s storage</h2>
+            <p>Choose where this server stores object files and metadata. Changing the path requires a server restart.</p>
+          </div>
+          <div class="storage-summary" id="storage-summary">
+            <div class="storage-summary-row">
+              <span class="muted">Node</span>
+              <strong class="mono" id="storage-node-id">—</strong>
+            </div>
+            <div class="storage-summary-row">
+              <span class="muted">Current path</span>
+              <strong class="mono" id="storage-current-path">—</strong>
+            </div>
+            <div class="storage-summary-row">
+              <span class="muted">Usage</span>
+              <strong id="storage-usage">—</strong>
+            </div>
+            <div class="storage-summary-row">
+              <span class="muted">DB objects</span>
+              <strong id="storage-db-count">—</strong>
+            </div>
+            <div class="storage-summary-row">
+              <span class="muted">Files on disk</span>
+              <strong id="storage-disk-count">—</strong>
+            </div>
+          </div>
+          <section class="storage-integrity" aria-labelledby="storage-integrity-title">
+            <div class="nodes-add-head">
+              <h4 id="storage-integrity-title" class="nodes-section-title">Integrity</h4>
+            </div>
+            <p class="muted storage-form-hint">
+              Compare the object table (including <code>.keep</code> markers) with files under <code>objects/</code>. Reconcile removes orphan files that have no database row.
+            </p>
+            <div class="panel-actions">
+              <button type="button" class="btn ghost" id="storage-check-btn">Check</button>
+              <button type="button" class="btn primary" id="storage-reconcile-btn">Reconcile</button>
+            </div>
+            <div class="storage-integrity-report" id="storage-integrity-report" hidden></div>
+          </section>
+          <div class="storage-form">
+            <label class="field">
+              New storage directory
+              <input type="text" id="storage-path-input" class="mono-input" placeholder="/path/to/storage" spellcheck="false" autocomplete="off" />
+            </label>
+            <p class="muted storage-form-hint">
+              Absolute path recommended. Relative paths are resolved from the server’s working directory.
+            </p>
+            <div class="panel-actions">
+              <button type="button" class="btn primary" id="storage-change-btn">Change location</button>
+            </div>
+          </div>
+          <p class="status storage-restart-banner" id="storage-restart-banner" hidden>
+            Storage path saved. Restart the MyS3 server to finish applying the change.
+          </p>
         </section>
 
         <section id="panel-recycle" class="settings-panel" hidden>
@@ -227,11 +349,16 @@
             </label>
             <button type="submit" class="btn primary">Save retention</button>
           </form>
-          <div class="panel-actions recycle-actions" id="recycle-bulk-actions" hidden>
-            <button type="button" class="btn ghost danger" id="recycle-delete-selected" disabled>
-              Delete selected
+          <div class="panel-actions recycle-actions">
+            <button type="button" class="btn ghost danger" id="recycle-empty-all" disabled>
+              Empty recycle bin
             </button>
-            <span class="recycle-selection-count" id="recycle-selection-count"></span>
+            <div class="recycle-bulk-inline" id="recycle-bulk-actions" hidden>
+              <button type="button" class="btn ghost danger" id="recycle-delete-selected" disabled>
+                Delete selected
+              </button>
+              <span class="recycle-selection-count" id="recycle-selection-count"></span>
+            </div>
           </div>
           <div class="table-wrap tight">
             <table>
@@ -251,6 +378,7 @@
             </table>
             <p class="empty" id="recycle-empty" hidden>Recycle bin is empty.</p>
           </div>
+          <div class="pager" id="recycle-pager" hidden></div>
         </section>
       </div>
     </div>
@@ -271,26 +399,121 @@
     </div>
   </div>
 
-  <div id="replication-dialog" class="ui-modal" hidden>
-    <div class="ui-modal-backdrop" data-replication-close tabindex="-1"></div>
-    <div class="ui-modal-panel" role="dialog" aria-modal="true" aria-labelledby="replication-dialog-title">
-      <form class="dialog-form" id="replication-form">
-        <h3 id="replication-dialog-title">Bucket replication</h3>
-        <input type="hidden" id="replication-bucket-id" />
-        <p class="ui-modal-message" id="replication-bucket-label"></p>
-        <label class="check-item">
-          <input type="checkbox" id="replication-all-nodes" />
-          Replicate to all cluster nodes
-        </label>
-        <p class="ui-modal-message" id="replication-peers-hint" hidden>
-          No cluster peers are registered yet. Seed peers via CLUSTER_PEERS or wait for heartbeat discovery.
+  <div id="nodes-dialog" class="ui-modal" hidden>
+    <div class="ui-modal-backdrop" data-nodes-close tabindex="-1"></div>
+    <div class="ui-modal-panel nodes-dialog-panel" role="dialog" aria-modal="true" aria-labelledby="nodes-dialog-title">
+      <div class="dialog-form nodes-dialog" id="nodes-dialog-body">
+        <header class="nodes-dialog-header">
+          <div class="nodes-dialog-heading">
+            <h3 id="nodes-dialog-title">Bucket nodes</h3>
+            <p class="nodes-dialog-sub" id="nodes-bucket-label"></p>
+          </div>
+          <div class="nodes-usage-pill" id="nodes-usage-summary" aria-live="polite">
+            <span class="nodes-usage-label">Used</span>
+            <strong class="nodes-usage-value">—</strong>
+          </div>
+        </header>
+        <input type="hidden" id="nodes-bucket-id" />
+        <p class="nodes-dialog-hint">
+          Each assigned node stores a full copy of this bucket. Soft quotas are advisory; hard quotas reject uploads that would exceed the allocation.
         </p>
-        <div class="check-list" id="replication-peer-checkboxes"></div>
+        <div class="nodes-list" id="nodes-list" aria-label="Assigned nodes"></div>
+        <section class="nodes-add" id="nodes-add-section" aria-labelledby="nodes-add-title">
+          <div class="nodes-add-head">
+            <h4 id="nodes-add-title" class="nodes-section-title">Add node</h4>
+            <p class="nodes-add-lead muted" id="nodes-available-hint">
+              Connect another MyS3 peer by its gRPC address. Remotes discovered on the cluster also show up below.
+            </p>
+          </div>
+          <div class="nodes-add-form" id="nodes-add-form">
+            <label class="field nodes-add-url-field">
+              <span class="nodes-add-label">Peer URL</span>
+              <input
+                type="text"
+                id="nodes-add-endpoint"
+                class="nodes-add-input"
+                placeholder="e.g. 10.0.0.2:50051"
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <span class="nodes-add-help">Accepts <code>host:port</code> or <code>http://host:port</code>. Port defaults to 50051.</span>
+            </label>
+            <label class="field nodes-add-id-field">
+              <span class="nodes-add-label">Node ID <em class="nodes-add-optional">optional</em></span>
+              <input
+                type="text"
+                id="nodes-add-node-id"
+                class="nodes-add-input"
+                placeholder="Auto-named from the host if left blank"
+                autocomplete="off"
+                spellcheck="false"
+              />
+            </label>
+            <label class="field nodes-add-pick-field" id="nodes-add-pick-wrap" hidden>
+              <span class="nodes-add-label">Or pick a known peer</span>
+              <select id="nodes-add-peer" class="nodes-add-input">
+                <option value="">Choose a discovered peer…</option>
+              </select>
+            </label>
+            <div class="nodes-add-row">
+              <label class="field nodes-add-gb-field">
+                <span class="nodes-add-label">Capacity (GB)</span>
+                <input type="number" id="nodes-add-gb" class="nodes-add-input" min="0.1" step="1" value="100" />
+              </label>
+              <div class="field nodes-add-quota-field">
+                <span class="nodes-add-label">Quota mode</span>
+                <div class="nodes-mode-toggle nodes-add-mode-toggle" role="group" aria-label="Quota mode">
+                  <button type="button" class="nodes-mode-opt is-active" data-mode="soft" id="nodes-add-mode-soft">Soft</button>
+                  <button type="button" class="nodes-mode-opt" data-mode="hard" id="nodes-add-mode-hard">Hard</button>
+                </div>
+                <span class="nodes-add-help">Soft warns; hard blocks uploads past the allocation.</span>
+                <input type="hidden" id="nodes-add-mode" value="soft" />
+              </div>
+            </div>
+            <div class="nodes-add-actions">
+              <button type="button" class="btn primary nodes-add-submit" id="nodes-add-btn">Add node to bucket</button>
+            </div>
+          </div>
+        </section>
+        <section class="nodes-etag" id="nodes-etag-section" aria-labelledby="nodes-etag-title">
+          <div class="nodes-add-head">
+            <h4 id="nodes-etag-title" class="nodes-section-title">ETag algorithm</h4>
+          </div>
+          <p class="nodes-etag-hint muted">
+            Hashing algorithm for object ETags. Request headers can still override per upload.
+          </p>
+          <div class="nodes-etag-form">
+            <label class="field">
+              Algorithm
+              <select id="nodes-etag-type">
+                <option value="md5">MD5</option>
+                <option value="sha256">SHA-256</option>
+                <option value="sha512">SHA-512</option>
+                <option value="blake2-128">Blake2-128</option>
+                <option value="blake2-256">Blake2-256</option>
+                <option value="blake3-128">Blake3-128</option>
+                <option value="blake3-256">Blake3-256</option>
+              </select>
+            </label>
+            <div class="field">
+              <span class="field-label">Apply to</span>
+              <div class="nodes-mode-toggle nodes-etag-apply" role="group" aria-label="Apply mode">
+                <button type="button" class="nodes-mode-opt is-active" data-apply="new_only">New objects only</button>
+                <button type="button" class="nodes-mode-opt" data-apply="recalculate_all">Recalculate all</button>
+              </div>
+              <input type="hidden" id="nodes-etag-apply" value="new_only" />
+            </div>
+            <div class="nodes-etag-actions">
+              <button type="button" class="btn primary" id="nodes-etag-apply-btn">Apply</button>
+            </div>
+          </div>
+          <p class="nodes-etag-progress muted" id="nodes-etag-progress" hidden></p>
+        </section>
+        <p class="status nodes-dialog-status" id="nodes-dialog-status" hidden></p>
         <div class="dialog-actions">
-          <button type="button" class="btn ghost" id="replication-cancel">Cancel</button>
-          <button type="submit" class="btn primary">Save</button>
+          <button type="button" class="btn primary" id="nodes-close">Done</button>
         </div>
-      </form>
+      </div>
     </div>
   </div>
 
@@ -356,8 +579,10 @@
   <script src="/static/vendor/marked.min.js"></script>
   <script src="/static/vendor/purify.min.js"></script>
   <script src="/static/dialog.js"></script>
+  <script src="/static/pager.js"></script>
   <script src="/static/app.js"></script>
   <script src="/static/transfer.js"></script>
+  <script src="/static/actions.js"></script>
   <script src="/static/settings.js"></script>
   <script src="/static/preview.js"></script>
 </body>

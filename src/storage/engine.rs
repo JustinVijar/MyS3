@@ -183,6 +183,21 @@ impl StorageEngine {
             .with_context(|| format!("open {}", path.display()))
     }
 
+    /// Re-hash an existing blob with `etag_type` (used by bucket etag recalculate).
+    pub async fn hash_filepath(&self, filepath: &str, etag_type: EtagType) -> Result<String> {
+        let mut file = self.open_read(filepath).await?;
+        let mut hasher = StreamingHasher::new(etag_type);
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            let n = file.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
+        Ok(hasher.finalize())
+    }
+
     pub async fn unlink(&self, filepath: &str) -> Result<()> {
         let path = self.absolute_path_for(filepath);
         if path.exists() {

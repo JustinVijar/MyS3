@@ -10,8 +10,10 @@ pub async fn enqueue_put_tx(
     object_id: i64,
     filepath_uuid: &str,
     etag: &str,
+    local_node_id: &str,
 ) -> Result<u64> {
-    repository::enqueue_put_for_active_peers(tx, object_id, filepath_uuid, etag).await
+    repository::enqueue_put_for_active_peers(tx, object_id, filepath_uuid, etag, local_node_id)
+        .await
 }
 
 pub async fn enqueue_delete_tx(
@@ -19,8 +21,16 @@ pub async fn enqueue_delete_tx(
     object_id: i64,
     filepath_uuid: &str,
     etag: &str,
+    local_node_id: &str,
 ) -> Result<u64> {
-    repository::enqueue_delete_for_active_peers(tx, object_id, filepath_uuid, etag).await
+    repository::enqueue_delete_for_active_peers(
+        tx,
+        object_id,
+        filepath_uuid,
+        etag,
+        local_node_id,
+    )
+    .await
 }
 
 pub async fn enqueue_put_peer(

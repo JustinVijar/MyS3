@@ -1,0 +1,31 @@
+services:
+  mys3:
+    build: .
+    image: mys3:local
+    container_name: mys3
+    restart: unless-stopped
+    ports:
+      - "${MYS3_HTTP_PORT:-9000}:9000"
+      - "${MYS3_GRPC_PORT:-50051}:50051"
+    environment:
+      NODE_ID: ${NODE_ID:-node-docker-1}
+      STORAGE_ROOT: /data
+      WIREGUARD_BIND_ADDR: 0.0.0.0:9000
+      GRPC_BIND_ADDR: 0.0.0.0:50051
+      DISABLE_TUI: "1"
+      RUST_LOG: ${RUST_LOG:-info}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
+      DEFAULT_ETAG_TYPE: ${DEFAULT_ETAG_TYPE:-md5}
+      # Comma-separated peer seeds: id=host:port,id2=host:port
+      CLUSTER_PEERS: ${CLUSTER_PEERS:-}
+    volumes:
+      # Default: named volume. To use the host `.data` directory instead:
+      #   MYS3_DATA=./.data docker compose up -d
+      - ${MYS3_DATA:-mys3-data}:/data
+    # Uncomment for two-node local clusters / peer URL testing:
+    # extra_hosts:
+    #   - "host.docker.internal:host-gateway"
+
+volumes:
+  mys3-data:

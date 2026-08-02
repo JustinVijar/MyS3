@@ -10,6 +10,7 @@ use crate::db::repository;
 /// for objects the peer is missing. Reverse heal happens when the peer runs its own cron.
 pub async fn run_anti_entropy(
     db: SqlitePool,
+    local_node_id: String,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
     let mut interval = tokio::time::interval(Duration::from_secs(3600));
@@ -22,7 +23,7 @@ pub async fn run_anti_entropy(
     loop {
         tokio::select! {
             _ = boot_delay.tick() => {
-                run_once(&db).await;
+                run_once(&db, &local_node_id).await;
                 // disable further boot ticks by waiting on hourly only after first
                 break;
             }
@@ -37,7 +38,7 @@ pub async fn run_anti_entropy(
     loop {
         tokio::select! {
             _ = interval.tick() => {
-                run_once(&db).await;
+                run_once(&db, &local_node_id).await;
             }
             _ = shutdown.changed() => {
                 if *shutdown.borrow() {
@@ -49,7 +50,7 @@ pub async fn run_anti_entropy(
     }
 }
 
-async fn run_once(db: &SqlitePool) {
+async fn run_once(db: &SqlitePool, local_node_id: &str) {
     let peers = match repository::list_active_peers(db).await {
         Ok(p) => p,
         Err(err) => {
@@ -67,6 +68,9 @@ async fn run_once(db: &SqlitePool) {
     };
 
     for peer in peers {
+        if peer.id == local_node_id {
+            continue;
+        }
         let mut client = match grpc_client::connect(&peer.wireguard_endpoint).await {
             Ok(c) => c,
             Err(err) => {

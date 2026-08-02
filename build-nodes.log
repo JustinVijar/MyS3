@@ -1,0 +1,71 @@
+warning: function `ping` is never used
+   --> src/cluster/grpc_client.rs:134:14
+    |
+134 | pub async fn ping(
+    |              ^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: enum `OutboxOperation` is never used
+   --> src/db/models.rs:238:10
+    |
+238 | pub enum OutboxOperation {
+    |          ^^^^^^^^^^^^^^^
+
+warning: enum `OutboxStatus` is never used
+   --> src/db/models.rs:245:10
+    |
+245 | pub enum OutboxStatus {
+    |          ^^^^^^^^^^^^
+
+warning: fields `object_id`, `status`, and `attempt_count` are never read
+   --> src/db/models.rs:256:9
+    |
+253 | pub struct OutboxJob {
+    |            --------- fields in this struct
+...
+256 |     pub object_id: Option<i64>,
+    |         ^^^^^^^^^
+...
+260 |     pub status: String,
+    |         ^^^^^^
+261 |     pub attempt_count: i64,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `OutboxJob` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: function `list_all_permissions` is never used
+   --> src/db/rbac.rs:291:14
+    |
+291 | pub async fn list_all_permissions(pool: &SqlitePool) -> Result<Vec<RoleBucketPermission>> {
+    |              ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `delete_object_by_filename_tx` is never used
+   --> src/db/repository.rs:469:14
+    |
+469 | pub async fn delete_object_by_filename_tx(
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `hard_delete_object_tx` is never used
+   --> src/db/repository.rs:648:14
+    |
+648 | pub async fn hard_delete_object_tx(
+    |              ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `folder_stats` is never used
+   --> src/db/repository.rs:710:14
+    |
+710 | pub async fn folder_stats(
+    |              ^^^^^^^^^^^^
+
+warning: associated function `digest_hex` is never used
+  --> src/storage/hasher.rs:73:12
+   |
+26 | impl StreamingHasher {
+   | -------------------- associated function in this implementation
+...
+73 |     pub fn digest_hex(etag_type: EtagType, data: &[u8]) -> String {
+   |            ^^^^^^^^^^
+
+warning: `rust-s3-engine` (bin "rust-s3-engine") generated 9 warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.13s

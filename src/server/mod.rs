@@ -1,10 +1,13 @@
 pub mod auth_sigv4;
+pub mod etag_rehash;
 pub mod ffmpeg;
+pub mod folder_archive;
 pub mod keys;
 pub mod purge;
 pub mod s3_routes;
 pub mod session_auth;
 pub mod settings_routes;
+pub mod share_routes;
 pub mod web_routes;
 
 use axum::middleware;
@@ -21,6 +24,7 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .merge(s3)
         .merge(settings_routes::router())
+        .merge(share_routes::router())
         .merge(web_routes::router())
         .with_state(state)
 }

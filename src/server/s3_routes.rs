@@ -89,7 +89,23 @@ pub async fn put_object_keyed_in_bucket(
     body: Body,
     bucket_id: Option<i64>,
 ) -> Response {
-    let etag_type = resolve_etag_type(&headers, state.config.default_etag_type);
+    let bucket_id = match bucket_id {
+        Some(id) => id,
+        None => match repository::default_bucket_id(&state.db).await {
+            Ok(id) => id,
+            Err(err) => {
+                return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
+            }
+        },
+    };
+
+    let bucket_default = match repository::bucket_etag_type(&state.db, bucket_id).await {
+        Ok(t) => t,
+        Err(err) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
+        }
+    };
+    let etag_type = resolve_etag_type(&headers, bucket_default);
 
     let stream = body.into_data_stream();
     let mapped = futures::StreamExt::map(stream, |r| r.map_err(|e| anyhow::anyhow!(e)));
@@ -114,16 +130,29 @@ pub async fn put_object_keyed_in_bucket(
         }
     };
 
-    let bucket_id = match bucket_id {
-        Some(id) => id,
-        None => match repository::default_bucket_id(&state.db).await {
-            Ok(id) => id,
-            Err(err) => {
-                let _ = state.engine.unlink(&stored.filepath).await;
-                return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
-            }
-        },
+    let previous_size = match repository::get_object_by_filename_in_bucket(
+        &state.db,
+        &key,
+        bucket_id,
+    )
+    .await
+    {
+        Ok(Some(existing)) => existing.filesize_bytes,
+        Ok(None) => 0,
+        Err(err) => {
+            let _ = state.engine.unlink(&stored.filepath).await;
+            return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
+        }
     };
+    let net_growth = stored.filesize_bytes.saturating_sub(previous_size);
+    if let Err(err) = repository::check_hard_quota(&state.db, bucket_id, net_growth).await {
+        let _ = state.engine.unlink(&stored.filepath).await;
+        let msg = err.to_string();
+        if msg.contains("quota exceeded") {
+            return (StatusCode::PAYLOAD_TOO_LARGE, msg).into_response();
+        }
+        return (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response();
+    }
 
     // Soft-delete any active object with the same key so the partial unique index allows insert.
     if let Err(err) =
@@ -153,7 +182,14 @@ pub async fn put_object_keyed_in_bucket(
         }
     };
 
-    if let Err(err) = outbox::enqueue_put_tx(&mut tx, obj_id, &stored.filepath, &stored.etag).await
+    if let Err(err) = outbox::enqueue_put_tx(
+        &mut tx,
+        obj_id,
+        &stored.filepath,
+        &stored.etag,
+        &state.config.node_id,
+    )
+    .await
     {
         let _ = tx.rollback().await;
         let _ = state.engine.unlink(&stored.filepath).await;

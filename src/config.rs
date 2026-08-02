@@ -1,9 +1,15 @@
 use std::env;
+use std::fs;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+use anyhow::{bail, Context, Result};
+
 use crate::db::models::EtagType;
+
+/// CWD-relative file that persists the UI-chosen storage root across restarts.
+pub const STORAGE_ROOT_OVERRIDE_FILE: &str = ".mys3/storage_root";
 
 #[derive(Debug, Clone)]
 pub struct PeerSeed {
@@ -37,12 +43,12 @@ impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
         let cli = parse_cli_overrides(env::args().skip(1));
 
-        // Precedence: CLI --storage > STORAGE_ROOT > ./.data (writable without root).
-        // Production: STORAGE_ROOT=/storage or --storage /storage.
+        // Precedence: CLI --storage > STORAGE_ROOT env > .mys3/storage_root > ./.data
         let storage_root = cli
             .storage_root
             .clone()
             .or_else(|| env::var("STORAGE_ROOT").ok().map(PathBuf::from))
+            .or_else(read_persisted_storage_root)
             .unwrap_or_else(|| PathBuf::from(".data"));
 
         let bind_addr = cli
@@ -115,6 +121,64 @@ impl Config {
     pub fn metadata_db_path(&self) -> PathBuf {
         self.storage_root.join("metadata.db")
     }
+}
+
+fn read_persisted_storage_root() -> Option<PathBuf> {
+    let raw = fs::read_to_string(STORAGE_ROOT_OVERRIDE_FILE).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(trimmed))
+}
+
+/// Resolve a user-supplied storage path to an absolute, normalized path.
+pub fn resolve_storage_path(input: &str) -> Result<PathBuf> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        bail!("storage path is required");
+    }
+    let path = PathBuf::from(trimmed);
+    let absolute = if path.is_absolute() {
+        path
+    } else {
+        env::current_dir()
+            .context("resolve current directory")?
+            .join(path)
+    };
+    // Normalize `.` / `..` without requiring the path to exist yet.
+    Ok(normalize_path(&absolute))
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Persist absolute storage root for the next process start (CWD-relative `.mys3/storage_root`).
+pub fn persist_storage_root(path: &Path) -> Result<()> {
+    let absolute = if path.is_absolute() {
+        normalize_path(path)
+    } else {
+        resolve_storage_path(&path.to_string_lossy())?
+    };
+    let parent = Path::new(".mys3");
+    fs::create_dir_all(parent).context("create .mys3 directory")?;
+    fs::write(
+        STORAGE_ROOT_OVERRIDE_FILE,
+        format!("{}\n", absolute.display()),
+    )
+    .context("write storage root override")?;
+    Ok(())
 }
 
 /// Parse `serve [--bind ADDR] [--storage PATH] [--grpc-bind ADDR]`.

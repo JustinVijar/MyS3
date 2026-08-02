@@ -1,6 +1,11 @@
 (function () {
   /** @typedef {'queued'|'active'|'done'|'error'|'cancelled'} JobStatus */
-  /** @typedef {{ id: number, kind: 'upload'|'download', key: string, label: string, totalBytes: number, loadedBytes: number, status: JobStatus, error?: string, file?: File, xhr?: XMLHttpRequest }} TransferJob */
+  /** @typedef {'upload'|'download'|'folder-download'} JobKind */
+  /** @typedef {{ id: number, kind: JobKind, key: string, label: string, bucket: string, totalBytes: number, loadedBytes: number, status: JobStatus, error?: string, file?: File, format?: string, downloadName?: string, xhr?: XMLHttpRequest, startedAt?: number, finishedAt?: number, historyRecorded?: boolean }} TransferJob */
+  /** @typedef {{ id: string, kind: JobKind, key: string, label: string, bucket: string, totalBytes: number, status: JobStatus, error?: string, finishedAt: number }} HistoryEntry */
+
+  const HISTORY_KEY = 'mys3.transferHistory';
+  const HISTORY_CAP = 200;
 
   /** @type {TransferJob[]} */
   let jobs = [];
@@ -11,6 +16,8 @@
   /** @type {{ t: number, loaded: number }[]} */
   let speedSamples = [];
   let expanded = false;
+  /** @type {Set<(payload: { jobs: TransferJob[], history: HistoryEntry[] }) => void>} */
+  const listeners = new Set();
 
   const dock = document.getElementById('transfer-dock');
   if (!dock) return;
@@ -39,6 +46,18 @@
   function basename(key) {
     const parts = String(key).split('/');
     return parts[parts.length - 1] || key;
+  }
+
+  function folderBasename(prefix) {
+    const trimmed = String(prefix || '').replace(/\/+$/, '');
+    const parts = trimmed.split('/');
+    return parts[parts.length - 1] || 'folder';
+  }
+
+  function archiveExtension(format) {
+    if (format === 'tar.gz' || format === 'tgz') return 'tar.gz';
+    if (format === '7z') return '7z';
+    return 'zip';
   }
 
   function formatBytes(n) {
@@ -121,16 +140,68 @@
     return remaining / bps;
   }
 
+  function loadHistory() {
+    try {
+      const raw = localStorage.getItem(HISTORY_KEY);
+      const arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? arr : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function saveHistory(entries) {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(entries.slice(0, HISTORY_CAP)));
+  }
+
+  function recordHistory(job) {
+    if (job.historyRecorded) return;
+    if (job.status !== 'done' && job.status !== 'error' && job.status !== 'cancelled') return;
+    job.historyRecorded = true;
+    job.finishedAt = job.finishedAt || Date.now();
+    const entry = {
+      id: `h-${job.id}-${job.finishedAt}`,
+      kind: job.kind,
+      key: job.key,
+      label: job.label,
+      bucket: job.bucket || bucket(),
+      totalBytes: job.totalBytes || job.loadedBytes || 0,
+      status: job.status,
+      error: job.error || undefined,
+      finishedAt: job.finishedAt,
+    };
+    const hist = loadHistory();
+    hist.unshift(entry);
+    saveHistory(hist);
+    notify();
+  }
+
+  function notify() {
+    const payload = { jobs: jobs.slice(), history: loadHistory() };
+    listeners.forEach((fn) => {
+      try {
+        fn(payload);
+      } catch {
+        /* ignore */
+      }
+    });
+  }
+
   function render() {
+    for (const j of jobs) {
+      if (
+        !j.historyRecorded &&
+        (j.status === 'done' || j.status === 'error' || j.status === 'cancelled')
+      ) {
+        recordHistory(j);
+      }
+    }
     const all = batchJobs();
     const uploads = all.filter((j) => j.kind === 'upload');
     const downloads = all.filter((j) => j.kind === 'download');
     const pending = pendingJobs();
     const doneCount = all.filter((j) => j.status === 'done').length;
     const totalCount = all.filter((j) => j.status !== 'cancelled').length || all.length;
-    const finishedLike = all.filter(
-      (j) => j.status === 'done' || j.status === 'error' || j.status === 'cancelled',
-    ).length;
 
     let loaded = 0;
     let total = 0;
@@ -208,6 +279,7 @@
     }
 
     listEl.hidden = !expanded;
+    notify();
   }
 
   function esc(s) {
@@ -223,6 +295,8 @@
   }
 
   function enqueue(job) {
+    job.bucket = job.bucket || bucket();
+    job.startedAt = Date.now();
     jobs.push(job);
     showDock();
     render();
@@ -244,6 +318,7 @@
       kind: 'upload',
       key,
       label: uploadLabel(key),
+      bucket: bucket(),
       totalBytes: file.size || 0,
       loadedBytes: 0,
       status: 'queued',
@@ -257,7 +332,25 @@
       kind: 'download',
       key,
       label: basename(key),
+      bucket: bucket(),
       totalBytes: sizeHint > 0 ? sizeHint : 0,
+      loadedBytes: 0,
+      status: 'queued',
+    });
+  }
+
+  function enqueueFolderDownload(prefix, format) {
+    const fmt = format || 'zip';
+    const name = folderBasename(prefix) + '.' + archiveExtension(fmt);
+    enqueue({
+      id: nextId++,
+      kind: 'folder-download',
+      key: prefix,
+      format: fmt,
+      label: name,
+      downloadName: name,
+      bucket: bucket(),
+      totalBytes: 0,
       loadedBytes: 0,
       status: 'queued',
     });
@@ -382,18 +475,30 @@
     });
   }
 
+  function downloadUrlForJob(job) {
+    if (job.kind === 'folder-download') {
+      const params = new URLSearchParams({
+        prefix: job.key,
+        bucket: bucket(),
+        format: job.format || 'zip',
+      });
+      return '/api/v1/folders/archive?' + params.toString();
+    }
+    return (
+      '/api/v1/objects/content/' +
+      encodeKeyPath(job.key) +
+      '?bucket=' +
+      encodeURIComponent(bucket())
+    );
+  }
+
   function runDownload(job) {
     return new Promise((resolve) => {
       const xhr = new XMLHttpRequest();
       job.xhr = xhr;
       job.status = 'active';
       render();
-      const url =
-        '/api/v1/objects/content/' +
-        encodeKeyPath(job.key) +
-        '?bucket=' +
-        encodeURIComponent(bucket());
-      xhr.open('GET', url);
+      xhr.open('GET', downloadUrlForJob(job));
       xhr.responseType = 'blob';
       const headers = authHeaders();
       Object.keys(headers).forEach((k) => xhr.setRequestHeader(k, headers[k]));
@@ -418,7 +523,11 @@
             const blobUrl = URL.createObjectURL(xhr.response);
             const link = document.createElement('a');
             link.href = blobUrl;
-            link.download = basename(job.key);
+            link.download =
+              job.downloadName ||
+              (job.kind === 'folder-download'
+                ? folderBasename(job.key) + '.' + archiveExtension(job.format)
+                : basename(job.key));
             document.body.appendChild(link);
             link.click();
             link.remove();
@@ -427,12 +536,24 @@
             job.status = 'error';
             job.error = String(err.message || err);
           }
+          job.xhr = undefined;
+          resolve();
         } else {
-          job.status = 'error';
-          job.error = 'HTTP ' + xhr.status;
+          const finishError = (msg) => {
+            job.status = 'error';
+            job.error = msg || 'HTTP ' + xhr.status;
+            job.xhr = undefined;
+            resolve();
+          };
+          if (xhr.response && typeof xhr.response.text === 'function') {
+            xhr.response
+              .text()
+              .then((t) => finishError((t && String(t).trim()) || 'HTTP ' + xhr.status))
+              .catch(() => finishError('HTTP ' + xhr.status));
+          } else {
+            finishError('HTTP ' + xhr.status);
+          }
         }
-        job.xhr = undefined;
-        resolve();
       };
       xhr.onerror = () => {
         job.status = 'error';
@@ -463,7 +584,7 @@
           continue;
         }
         if (next.kind === 'upload') await runUpload(next);
-        else await runDownload(next);
+        else await runDownload(next); // download | folder-download
         render();
       }
       const hadUploads = jobs.some((j) => j.kind === 'upload' && j.status === 'done');
@@ -491,6 +612,7 @@
   cancelAllBtn.addEventListener('click', () => cancelAllJobs());
 
   dismissBtn.addEventListener('click', () => {
+    // Clear dock batch only; localStorage history is kept for Actions.
     jobs = [];
     speedSamples = [];
     dock.hidden = true;
@@ -504,8 +626,25 @@
   window.MyS3Transfers = {
     enqueueUpload,
     enqueueDownload,
+    enqueueFolderDownload,
     enqueueUploads,
     enqueueDownloads,
     cancelAll: cancelAllJobs,
+    getJobs: () => jobs.slice(),
+    getHistory: () => loadHistory(),
+    clearHistory: () => {
+      saveHistory([]);
+      notify();
+    },
+    subscribe: (listener) => {
+      if (typeof listener !== 'function') return () => {};
+      listeners.add(listener);
+      try {
+        listener({ jobs: jobs.slice(), history: loadHistory() });
+      } catch {
+        /* ignore */
+      }
+      return () => listeners.delete(listener);
+    },
   };
 })();

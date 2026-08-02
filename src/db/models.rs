@@ -7,6 +7,7 @@ use strum::{Display, EnumString};
     Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, EnumString, Display, sqlx::Type,
 )]
 #[strum(serialize_all = "kebab-case")]
+#[serde(rename_all = "kebab-case")]
 #[sqlx(type_name = "TEXT", rename_all = "kebab-case")]
 pub enum EtagType {
     #[strum(serialize = "md5")]
@@ -55,6 +56,13 @@ pub struct BucketRecord {
     pub owner_account_id: Option<i64>,
     /// When true, replicate to every active cluster peer (legacy default).
     pub replicate_to_all: bool,
+    /// Default hashing algorithm for new objects in this bucket.
+    pub etag_type: EtagType,
+    /// NULL | running | done | error
+    pub etag_rehash_status: Option<String>,
+    pub etag_rehash_processed: i64,
+    pub etag_rehash_total: i64,
+    pub etag_rehash_error: Option<String>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
@@ -168,12 +176,69 @@ pub struct AppSettings {
     pub recycle_retention_unit: RetentionUnit,
 }
 
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, EnumString, Display, sqlx::Type,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+#[sqlx(type_name = "TEXT", rename_all = "snake_case")]
+pub enum ShareTargetKind {
+    File,
+    Folder,
+}
+
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, EnumString, Display, sqlx::Type,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+#[sqlx(type_name = "TEXT", rename_all = "snake_case")]
+pub enum ShareAccessMode {
+    SpecificUsers,
+    BucketReaders,
+    Public,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct ShareLinkRecord {
+    pub id: i64,
+    pub token: String,
+    pub short_code: Option<String>,
+    pub bucket_id: i64,
+    pub target_key: String,
+    pub target_kind: ShareTargetKind,
+    pub access_mode: ShareAccessMode,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub created_by_account_id: i64,
+    pub created_at: DateTime<Utc>,
+    pub revoked_at: Option<DateTime<Utc>>,
+}
+
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct ClusterPeer {
     pub id: String,
     pub wireguard_endpoint: String,
     pub is_active: bool,
     pub last_heartbeat_utc: Option<DateTime<Utc>>,
+}
+
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, EnumString, Display, sqlx::Type,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+#[sqlx(type_name = "TEXT", rename_all = "snake_case")]
+pub enum QuotaMode {
+    Soft,
+    Hard,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct BucketNodeAssignment {
+    pub bucket_id: i64,
+    pub peer_id: String,
+    pub allocated_bytes: i64,
+    pub quota_mode: QuotaMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Display, EnumString)]

@@ -569,16 +569,18 @@ pub async fn create_bucket(
     pool: &SqlitePool,
     name: &str,
     owner_account_id: i64,
+    etag_type: crate::db::models::EtagType,
 ) -> Result<BucketRecord> {
     let id = sqlx::query_scalar::<_, i64>(
         r#"
-        INSERT INTO bucket (name, owner_account_id)
-        VALUES (?1, ?2)
+        INSERT INTO bucket (name, owner_account_id, etag_type)
+        VALUES (?1, ?2, ?3)
         RETURNING id
         "#,
     )
     .bind(name)
     .bind(owner_account_id)
+    .bind(etag_type.to_string())
     .fetch_one(pool)
     .await?;
 

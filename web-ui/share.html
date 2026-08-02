@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Shared — MyS3</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/vendor/github-dark.min.css" />
+  <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body class="share-page">
+  <div class="share-shell" id="share-shell">
+    <header class="topbar share-topbar">
+      <a class="brand" href="/">MyS3</a>
+      <div class="topbar-meta">
+        <span class="bucket-chip" id="share-chip">Shared</span>
+      </div>
+    </header>
+
+    <div id="share-gate" class="share-gate" hidden>
+      <div id="share-login" class="share-card" hidden>
+        <p class="share-card-kicker">Protected share</p>
+        <h1 class="share-card-title">Sign in to continue</h1>
+        <p class="share-card-lead" id="share-login-lead">This link requires an account.</p>
+        <label class="field">
+          Username (hex)
+          <input type="text" id="share-login-user" class="mono-input" autocomplete="username" spellcheck="false" />
+        </label>
+        <label class="field">
+          Password (hex)
+          <input type="password" id="share-login-pass" class="mono-input" autocomplete="current-password" spellcheck="false" />
+        </label>
+        <button type="button" class="btn primary share-card-btn" id="share-login-btn">Sign in</button>
+        <p class="status auth-status" id="share-login-status" hidden></p>
+      </div>
+
+      <div id="share-error" class="share-card share-card-error" hidden>
+        <p class="share-card-kicker">Unavailable</p>
+        <h1 class="share-card-title" id="share-error-title">Unavailable</h1>
+        <p class="share-card-lead" id="share-error-msg">This share link is not available.</p>
+        <a class="btn ghost share-card-btn" href="/">Back to MyS3</a>
+      </div>
+    </div>
+
+    <main id="share-main" class="share-main" hidden>
+      <section class="share-hero">
+        <div class="share-hero-icon" id="share-hero-icon" aria-hidden="true"></div>
+        <div class="share-hero-text">
+          <p class="share-kicker" id="share-kicker">Shared file</p>
+          <h1 id="share-title">Shared item</h1>
+          <p class="share-meta" id="share-meta"></p>
+        </div>
+        <div class="share-hero-actions" id="share-file-actions" hidden>
+          <button type="button" class="btn primary" id="share-preview-btn">Preview</button>
+          <button type="button" class="btn ghost" id="share-download-btn">Download</button>
+        </div>
+      </section>
+
+      <section id="share-file-stage" class="share-file-stage" hidden>
+        <div class="share-stage-frame" id="share-stage-frame">
+          <div class="share-stage-loading" id="share-stage-loading">Loading preview…</div>
+          <div class="share-stage-body" id="share-stage-body" hidden></div>
+          <div class="share-stage-fallback" id="share-stage-fallback" hidden>
+            <p>This file can’t be previewed here.</p>
+            <button type="button" class="btn primary" id="share-stage-download">Download</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="share-folder-view" class="share-folder-view" hidden>
+        <nav class="breadcrumbs share-breadcrumbs" id="share-breadcrumbs" aria-label="Location"></nav>
+        <div class="table-wrap share-table-wrap">
+          <table aria-label="Shared folder contents">
+            <thead>
+              <tr>
+                <th class="col-name">Name</th>
+                <th class="col-size">Size</th>
+                <th class="col-modified">Modified</th>
+                <th class="col-actions"></th>
+              </tr>
+            </thead>
+            <tbody id="share-listing-body"></tbody>
+          </table>
+          <p id="share-empty" class="empty" hidden>This folder is empty.</p>
+        </div>
+      </section>
+    </main>
+
+    <p class="status share-toast" id="share-toast" hidden></p>
+  </div>
+
+  <div id="preview-modal" class="preview-modal" hidden>
+    <div class="preview-backdrop" data-preview-close tabindex="-1"></div>
+    <div class="preview-dialog" role="dialog" aria-modal="true" aria-labelledby="preview-title">
+      <header class="preview-header">
+        <h2 id="preview-title" class="preview-title">Preview</h2>
+        <div class="preview-toolbar">
+          <div class="preview-md-toggle" id="preview-md-toggle" hidden>
+            <button type="button" class="btn ghost active" data-md-mode="preview">Preview</button>
+            <button type="button" class="btn ghost" data-md-mode="source">Source</button>
+          </div>
+          <label class="preview-quality-wrap" id="preview-quality-wrap" hidden>
+            <span class="sr-only">Quality</span>
+            <select id="preview-quality" aria-label="Video quality">
+              <option value="original">Original</option>
+              <option value="720" selected>720p</option>
+              <option value="480">480p</option>
+              <option value="320">320p</option>
+              <option value="114">114p</option>
+            </select>
+          </label>
+          <button type="button" class="btn ghost" id="preview-download">Download</button>
+          <button type="button" class="btn ghost" id="preview-close" aria-label="Close preview">Close</button>
+        </div>
+      </header>
+      <div class="preview-body" id="preview-body"></div>
+    </div>
+  </div>
+
+  <script src="/static/vendor/highlight.min.js"></script>
+  <script src="/static/vendor/marked.min.js"></script>
+  <script src="/static/vendor/purify.min.js"></script>
+  <script src="/static/share.js"></script>
+  <script src="/static/preview.js"></script>
+</body>
+</html>

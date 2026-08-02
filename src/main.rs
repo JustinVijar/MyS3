@@ -48,6 +48,10 @@ async fn main() -> anyhow::Result<()> {
         .context("migrate db")?;
 
     cluster::peer_manager::seed_peers_from_config(&db, &config).await?;
+    // Register local node for bucket node allocations / quotas.
+    cluster::peer_manager::ensure_local_node(&db, &config)
+        .await
+        .context("ensure local cluster node")?;
 
     if !server::ffmpeg::ffmpeg_available() {
         tracing::warn!(
@@ -120,17 +124,25 @@ async fn main() -> anyhow::Result<()> {
 
     // Anti-entropy
     let ae_db = db.clone();
+    let ae_node = config.node_id.clone();
     let ae_shutdown = shutdown_rx.clone();
     let ae_handle = tokio::spawn(async move {
-        cluster::anti_entropy::run_anti_entropy(ae_db, ae_shutdown).await;
+        cluster::anti_entropy::run_anti_entropy(ae_db, ae_node, ae_shutdown).await;
     });
 
     // Recycle-bin retention purge
     let purge_db = db.clone();
     let purge_engine = engine.clone();
+    let purge_node = config.node_id.clone();
     let purge_shutdown = shutdown_rx.clone();
     let purge_handle = tokio::spawn(async move {
-        server::purge::run_recycle_purge_worker(purge_db, purge_engine, purge_shutdown).await;
+        server::purge::run_recycle_purge_worker(
+            purge_db,
+            purge_engine,
+            purge_node,
+            purge_shutdown,
+        )
+        .await;
     });
 
     // Ctrl+C → shutdown
