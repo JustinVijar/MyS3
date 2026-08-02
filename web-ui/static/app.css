@@ -622,6 +622,22 @@ body.preview-open { overflow: hidden; }
 .preview-media video {
   width: min(100%, 960px);
 }
+.preview-media-video {
+  position: relative;
+  flex-direction: column;
+  gap: 0.5rem;
+  width: 100%;
+}
+.preview-media-video .preview-loading {
+  padding: 0.35rem 0;
+  font-size: 0.85rem;
+}
+.preview-media-video video {
+  width: min(100%, 960px);
+}
+.share-stage-video {
+  width: 100%;
+}
 
 .preview-code {
   margin: 0;

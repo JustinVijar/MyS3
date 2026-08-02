@@ -649,6 +649,39 @@ function wireRowMenu(tr, items) {
   });
 }
 
+async function copyMediaLink(kind, key) {
+  const res = await api('/api/v1/media-links', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      bucket: currentBucket,
+      key,
+      kind,
+    }),
+  });
+  if (res.status === 409 && kind === 'folder') {
+    showStatus('Create a share for this folder first');
+    await openShareDialog({ kind: 'folder', key });
+    return;
+  }
+  if (!res.ok) throw new Error(await res.text());
+  const data = await res.json();
+  const path = data.path || data.url || '';
+  const absolute = /^https?:\/\//i.test(path) ? path : location.origin + path;
+  await navigator.clipboard.writeText(absolute);
+  let msg = 'Link copied';
+  if (data.auth === 'token' && data.expires_at) {
+    try {
+      msg += ' (expires ' + new Date(data.expires_at).toLocaleString() + ')';
+    } catch {
+      /* ignore */
+    }
+  } else if (data.access_mode === 'public') {
+    msg += ' (public)';
+  }
+  showStatus(msg);
+}
+
 function folderMenuItems(folder) {
   const cp = folder.prefix;
   return [
@@ -658,6 +691,12 @@ function folderMenuItems(folder) {
       label: 'Download…',
       action: () => {
         downloadFolder(cp).catch((e) => showStatus(String(e.message || e), true));
+      },
+    },
+    {
+      label: 'Copy link',
+      action: () => {
+        copyMediaLink('folder', cp).catch((e) => showStatus(String(e.message || e), true));
       },
     },
     { label: 'Share', action: () => openShareDialog({ kind: 'folder', key: cp }) },
@@ -673,6 +712,12 @@ function fileMenuItems(o, openFn) {
     { label: 'Preview', action: openFn },
     { label: 'Info', action: () => showFileInfo(o) },
     { label: 'Download', action: () => downloadObject(key, o.filesize_bytes) },
+    {
+      label: 'Copy link',
+      action: () => {
+        copyMediaLink('file', key).catch((e) => showStatus(String(e.message || e), true));
+      },
+    },
     { label: 'Share', action: () => openShareDialog({ kind: 'file', key }) },
     { sep: true },
     { label: 'Delete', danger: true, action: () => deleteObject(key) },
@@ -771,18 +816,39 @@ async function openShareDialog(target) {
           const copyBtn = document.createElement('button');
           copyBtn.type = 'button';
           copyBtn.className = 'btn ghost';
-          copyBtn.textContent = 'Copy';
+          copyBtn.textContent = 'Copy page';
           copyBtn.addEventListener('click', async () => {
             try {
               await navigator.clipboard.writeText(url);
               copyBtn.textContent = 'Copied';
               setTimeout(() => {
-                copyBtn.textContent = 'Copy';
+                copyBtn.textContent = 'Copy page';
               }, 1500);
             } catch {
               copyBtn.textContent = 'Failed';
             }
           });
+          actions.appendChild(copyBtn);
+          if (kind === 'file') {
+            const copyMediaBtn = document.createElement('button');
+            copyMediaBtn.type = 'button';
+            copyMediaBtn.className = 'btn ghost';
+            copyMediaBtn.textContent = 'Copy media';
+            copyMediaBtn.title = 'Direct URL for VLC / browser';
+            copyMediaBtn.addEventListener('click', async () => {
+              try {
+                await copyMediaLink('file', key);
+                copyMediaBtn.textContent = 'Copied';
+                setTimeout(() => {
+                  copyMediaBtn.textContent = 'Copy media';
+                }, 1500);
+              } catch (err) {
+                copyMediaBtn.textContent = 'Failed';
+                showStatus(String(err.message || err), true);
+              }
+            });
+            actions.appendChild(copyMediaBtn);
+          }
           const revokeBtn = document.createElement('button');
           revokeBtn.type = 'button';
           revokeBtn.className = 'btn ghost danger';
@@ -797,7 +863,6 @@ async function openShareDialog(target) {
             }
             await loadExisting();
           });
-          actions.appendChild(copyBtn);
           actions.appendChild(revokeBtn);
           item.appendChild(info);
           item.appendChild(actions);

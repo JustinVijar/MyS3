@@ -46,6 +46,8 @@
   let idKind = null;
   /** @type {string} */
   let idValue = '';
+  /** @type {string} Signed access query for non-public share page links. */
+  let accessToken = '';
   /** @type {string} */
   let shareRoot = '';
   /** @type {string} */
@@ -76,6 +78,12 @@
     return '/api/v1/shares/by-token/' + encodeURIComponent(idValue);
   }
 
+  function withAccess(url) {
+    if (!accessToken) return url;
+    const sep = url.indexOf('?') >= 0 ? '&' : '?';
+    return url + sep + 'access=' + encodeURIComponent(accessToken);
+  }
+
   function encodeKeyPath(key) {
     return key
       .split('/')
@@ -84,15 +92,7 @@
   }
 
   function contentUrl(key) {
-    return apiBase() + '/content/' + encodeKeyPath(key);
-  }
-
-  function previewVideoUrl(key, height) {
-    const params = new URLSearchParams();
-    if (height && height !== 'original') params.set('height', String(height));
-    else if (height === 'original') params.set('height', 'original');
-    const q = params.toString();
-    return apiBase() + '/preview-video/' + encodeKeyPath(key) + (q ? '?' + q : '');
+    return withAccess(apiBase() + '/content/' + encodeKeyPath(key));
   }
 
   function api(path, opts) {
@@ -169,6 +169,11 @@
 
   function parseSharePath() {
     const path = location.pathname.replace(/\/+$/, '');
+    try {
+      accessToken = new URLSearchParams(location.search).get('access') || '';
+    } catch {
+      accessToken = '';
+    }
     const short = path.match(/^\/s\/([^/]+)$/);
     if (short) {
       idKind = 'code';
@@ -216,7 +221,7 @@
   }
 
   async function fetchMeta() {
-    const res = await api(apiBase());
+    const res = await api(withAccess(apiBase()));
     if (res.status === 401) {
       let body = null;
       try {
@@ -313,7 +318,9 @@
   async function loadFolder() {
     listingBody.innerHTML = '';
     emptyEl.hidden = true;
-    const url = apiBase() + '/list?prefix=' + encodeURIComponent(browsePrefix);
+    const url = withAccess(
+      apiBase() + '/list?prefix=' + encodeURIComponent(browsePrefix),
+    );
     const res = await api(url);
     if (res.status === 401) {
       showLogin(meta && meta.display_name);
@@ -416,7 +423,17 @@
     }
   }
 
+  /** @type {AbortController|null} */
+  let stageVideoAbort = null;
+
   function revokeStageUrl() {
+    if (stageVideoAbort) {
+      stageVideoAbort.abort();
+      stageVideoAbort = null;
+    }
+    if (window.MyS3VideoPreview && typeof window.MyS3VideoPreview.destroy === 'function') {
+      window.MyS3VideoPreview.destroy();
+    }
     if (stageObjectUrl) {
       URL.revokeObjectURL(stageObjectUrl);
       stageObjectUrl = null;
@@ -448,30 +465,56 @@
       }
 
       if (VIDEO_EXT.has(ext)) {
-        // Prefer ffmpeg preview for broad format support; fall back to raw content.
-        let url = null;
-        try {
-          const res = await api(previewVideoUrl(key, '720'));
-          if (res.ok) {
-            const blob = await res.blob();
-            if (blob && blob.size > 0) {
-              stageObjectUrl = URL.createObjectURL(blob);
-              url = stageObjectUrl;
-            }
-          }
-        } catch {
-          /* fall through */
+        if (
+          !window.MyS3VideoPreview ||
+          typeof window.MyS3VideoPreview.play !== 'function' ||
+          !window.MyS3VideoPreview.isSupported()
+        ) {
+          throw new Error('This browser cannot preview video.');
         }
-        if (!url) {
-          const res = await api(contentUrl(key));
-          if (!res.ok) throw new Error(await res.text());
-          const blob = await res.blob();
-          stageObjectUrl = URL.createObjectURL(blob);
-          url = stageObjectUrl;
+        const native =
+          typeof window.MyS3VideoPreview.isNativePlayable === 'function' &&
+          window.MyS3VideoPreview.isNativePlayable(key);
+        if (
+          !native &&
+          typeof window.MyS3VideoPreview.canTranscode === 'function' &&
+          !window.MyS3VideoPreview.canTranscode()
+        ) {
+          throw new Error(
+            'This browser cannot preview this format (needs MediaSource and Origin Private File System).'
+          );
         }
+        const controller = new AbortController();
+        stageVideoAbort = controller;
         stageBody.innerHTML =
-          '<video class="share-stage-media" controls playsinline src="' + escAttr(url) + '"></video>';
+          '<div class="preview-media-video share-stage-video">' +
+          '<div class="preview-loading" id="share-stage-video-status">Loading…</div>' +
+          '<video class="share-stage-media" id="share-stage-video-el" controls playsinline></video>' +
+          '</div>';
         setStageMode('body');
+        const videoEl = stageBody.querySelector('#share-stage-video-el');
+        const statusEl = stageBody.querySelector('#share-stage-video-status');
+        const setStatus = (msg) => {
+          if (!statusEl) return;
+          if (!msg) {
+            statusEl.hidden = true;
+            statusEl.textContent = '';
+            return;
+          }
+          statusEl.hidden = false;
+          statusEl.textContent = msg;
+        };
+        await window.MyS3VideoPreview.play({
+          video: videoEl,
+          key,
+          nativeUrl: native ? contentUrl(key) : null,
+          height: native ? 'original' : '720',
+          signal: controller.signal,
+          onStatus: setStatus,
+          fetchContent: () => api(contentUrl(key), { signal: controller.signal }),
+        });
+        setStatus('');
+        // Keep stageVideoAbort until revokeStageUrl so in-flight encodes can be cancelled.
         return;
       }
 
@@ -508,6 +551,7 @@
       stageDownload.textContent = 'Download';
       stageDownload.onclick = () => downloadKey(key);
     } catch (err) {
+      if (err && err.name === 'AbortError') return;
       setStageMode('fallback');
       stageFallback.querySelector('p').textContent = String(err.message || err);
       stageDownload.textContent = 'Download';
@@ -557,7 +601,6 @@
   window.MyS3 = {
     api,
     contentUrl,
-    previewVideoUrl,
     downloadObject: downloadKey,
     formatBytes,
     showStatus: showToast,

@@ -1,5 +1,5 @@
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
@@ -11,7 +11,8 @@ use crate::db::models::{CrudAction, ShareAccessMode, ShareLinkRecord, ShareTarge
 use crate::db::repository;
 use crate::db::{rbac, shares};
 use crate::server::keys::{normalize_folder_prefix, normalize_object_key};
-use crate::server::s3_routes::get_object_keyed;
+use crate::server::media_access::{self, MediaGrant};
+use crate::server::s3_routes::get_object_keyed_with_headers;
 use crate::server::session_auth::{
     require_bucket_perm, resolve_bucket_id, AuthAccount, OptionalAuth,
 };
@@ -32,14 +33,6 @@ pub fn router() -> Router<AppState> {
         .route(
             "/api/v1/shares/by-code/:code/content/*key",
             get(share_content_by_code),
-        )
-        .route(
-            "/api/v1/shares/by-token/:token/preview-video/*key",
-            get(share_preview_video_by_token),
-        )
-        .route(
-            "/api/v1/shares/by-code/:code/preview-video/*key",
-            get(share_preview_video_by_code),
         )
         .route(
             "/api/v1/shares/by-token/:token/list",
@@ -295,10 +288,25 @@ fn display_name_for(share: &ShareLinkRecord) -> String {
     }
 }
 
+fn access_token_grants_share(state: &AppState, share: &ShareLinkRecord, access: Option<&str>) -> bool {
+    let Some(raw) = access.map(str::trim).filter(|s| !s.is_empty()) else {
+        return false;
+    };
+    match media_access::verify_access_token(&state.config, raw) {
+        Ok(MediaGrant::Share {
+            share_id,
+            bucket_id,
+            ..
+        }) => share_id == share.id && bucket_id == share.bucket_id,
+        _ => false,
+    }
+}
+
 async fn authorize_share(
     state: &AppState,
     share: &ShareLinkRecord,
     auth: &OptionalAuth,
+    access: Option<&str>,
 ) -> Result<(), Response> {
     if let Err(reason) = shares::share_is_usable(share, Utc::now()) {
         let status = match reason {
@@ -311,6 +319,9 @@ async fn authorize_share(
     match share.access_mode {
         ShareAccessMode::Public => Ok(()),
         ShareAccessMode::BucketReaders => {
+            if access_token_grants_share(state, share, access) {
+                return Ok(());
+            }
             let Some(account) = auth.0.as_ref() else {
                 return Err((StatusCode::UNAUTHORIZED, "authentication required").into_response());
             };
@@ -325,6 +336,9 @@ async fn authorize_share(
             }
         }
         ShareAccessMode::SpecificUsers => {
+            if access_token_grants_share(state, share, access) {
+                return Ok(());
+            }
             let Some(account) = auth.0.as_ref() else {
                 return Err((StatusCode::UNAUTHORIZED, "authentication required").into_response());
             };
@@ -337,6 +351,11 @@ async fn authorize_share(
             }
         }
     }
+}
+
+#[derive(Deserialize, Default)]
+struct AccessQuery {
+    access: Option<String>,
 }
 
 async fn load_share_by_token(state: &AppState, token: &str) -> Result<ShareLinkRecord, Response> {
@@ -355,8 +374,13 @@ async fn load_share_by_code(state: &AppState, code: &str) -> Result<ShareLinkRec
     }
 }
 
-async fn meta_for_share(state: &AppState, share: ShareLinkRecord, auth: OptionalAuth) -> Response {
-    if let Err(r) = authorize_share(state, &share, &auth).await {
+async fn meta_for_share(
+    state: &AppState,
+    share: ShareLinkRecord,
+    auth: OptionalAuth,
+    access: Option<&str>,
+) -> Response {
+    if let Err(r) = authorize_share(state, &share, &auth, access).await {
         // For metadata, still tell the client if login is required (401) vs gone/forbidden.
         return r;
     }
@@ -398,13 +422,18 @@ async fn share_meta_by_token(
     State(state): State<AppState>,
     auth: OptionalAuth,
     Path(token): Path<String>,
+    Query(aq): Query<AccessQuery>,
 ) -> Response {
     let share = match load_share_by_token(&state, &token).await {
         Ok(s) => s,
         Err(r) => return r,
     };
+    let access = aq.access.as_deref();
     // Soft probe: if unauthorized, include login_required hint via JSON on 401.
-    if share.access_mode != ShareAccessMode::Public && auth.0.is_none() {
+    if share.access_mode != ShareAccessMode::Public
+        && auth.0.is_none()
+        && !access_token_grants_share(&state, &share, access)
+    {
         if let Err(reason) = shares::share_is_usable(&share, Utc::now()) {
             let status = match reason {
                 shares::ShareDenyReason::Expired | shares::ShareDenyReason::Revoked => {
@@ -425,19 +454,24 @@ async fn share_meta_by_token(
         )
             .into_response();
     }
-    meta_for_share(&state, share, auth).await
+    meta_for_share(&state, share, auth, access).await
 }
 
 async fn share_meta_by_code(
     State(state): State<AppState>,
     auth: OptionalAuth,
     Path(code): Path<String>,
+    Query(aq): Query<AccessQuery>,
 ) -> Response {
     let share = match load_share_by_code(&state, &code).await {
         Ok(s) => s,
         Err(r) => return r,
     };
-    if share.access_mode != ShareAccessMode::Public && auth.0.is_none() {
+    let access = aq.access.as_deref();
+    if share.access_mode != ShareAccessMode::Public
+        && auth.0.is_none()
+        && !access_token_grants_share(&state, &share, access)
+    {
         if let Err(reason) = shares::share_is_usable(&share, Utc::now()) {
             let status = match reason {
                 shares::ShareDenyReason::Expired | shares::ShareDenyReason::Revoked => {
@@ -458,7 +492,7 @@ async fn share_meta_by_code(
         )
             .into_response();
     }
-    meta_for_share(&state, share, auth).await
+    meta_for_share(&state, share, auth, access).await
 }
 
 #[derive(Deserialize)]
@@ -466,6 +500,7 @@ struct ShareListQuery {
     /// Absolute key prefix, or path relative to the share root.
     #[serde(default)]
     prefix: String,
+    access: Option<String>,
 }
 
 async fn list_for_share(
@@ -474,7 +509,7 @@ async fn list_for_share(
     auth: OptionalAuth,
     q: ShareListQuery,
 ) -> Response {
-    if let Err(r) = authorize_share(state, &share, &auth).await {
+    if let Err(r) = authorize_share(state, &share, &auth, q.access.as_deref()).await {
         return r;
     }
     if share.target_kind != ShareTargetKind::Folder {
@@ -550,8 +585,10 @@ async fn content_for_share(
     share: ShareLinkRecord,
     auth: OptionalAuth,
     raw_key: String,
+    access: Option<&str>,
+    headers: &HeaderMap,
 ) -> Response {
-    if let Err(r) = authorize_share(&state, &share, &auth).await {
+    if let Err(r) = authorize_share(&state, &share, &auth, access).await {
         return r;
     }
     let key = match normalize_object_key(&raw_key) {
@@ -562,7 +599,7 @@ async fn content_for_share(
         return (StatusCode::FORBIDDEN, "key outside share scope").into_response();
     }
     match repository::get_object_by_filename_in_bucket(&state.db, &key, share.bucket_id).await {
-        Ok(Some(_)) => get_object_keyed(state, key).await,
+        Ok(Some(_)) => get_object_keyed_with_headers(state, key, headers).await,
         Ok(None) => (StatusCode::NOT_FOUND, "object not found").into_response(),
         Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
     }
@@ -572,87 +609,27 @@ async fn share_content_by_token(
     State(state): State<AppState>,
     auth: OptionalAuth,
     Path((token, raw_key)): Path<(String, String)>,
+    Query(aq): Query<AccessQuery>,
+    headers: HeaderMap,
 ) -> Response {
     let share = match load_share_by_token(&state, &token).await {
         Ok(s) => s,
         Err(r) => return r,
     };
-    content_for_share(state, share, auth, raw_key).await
+    content_for_share(state, share, auth, raw_key, aq.access.as_deref(), &headers).await
 }
 
 async fn share_content_by_code(
     State(state): State<AppState>,
     auth: OptionalAuth,
     Path((code, raw_key)): Path<(String, String)>,
+    Query(aq): Query<AccessQuery>,
+    headers: HeaderMap,
 ) -> Response {
     let share = match load_share_by_code(&state, &code).await {
         Ok(s) => s,
         Err(r) => return r,
     };
-    content_for_share(state, share, auth, raw_key).await
+    content_for_share(state, share, auth, raw_key, aq.access.as_deref(), &headers).await
 }
 
-#[derive(Deserialize)]
-struct SharePreviewVideoQuery {
-    /// Omit / original / 0 = full resolution; else 720|480|320|114.
-    height: Option<String>,
-}
-
-async fn preview_video_for_share(
-    state: AppState,
-    share: ShareLinkRecord,
-    auth: OptionalAuth,
-    raw_key: String,
-    height_raw: Option<String>,
-) -> Response {
-    if let Err(r) = authorize_share(&state, &share, &auth).await {
-        return r;
-    }
-    let key = match normalize_object_key(&raw_key) {
-        Ok(k) => k,
-        Err(msg) => return (StatusCode::BAD_REQUEST, msg).into_response(),
-    };
-    if !shares::key_in_share_scope(&share, &key) {
-        return (StatusCode::FORBIDDEN, "key outside share scope").into_response();
-    }
-    let height = match crate::server::ffmpeg::parse_preview_height(height_raw.as_deref()) {
-        Ok(h) => h,
-        Err(msg) => return (StatusCode::BAD_REQUEST, msg).into_response(),
-    };
-    let record =
-        match repository::get_object_by_filename_in_bucket(&state.db, &key, share.bucket_id).await {
-            Ok(Some(r)) => r,
-            Ok(None) => return (StatusCode::NOT_FOUND, "object not found").into_response(),
-            Err(err) => {
-                return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
-            }
-        };
-    let path = state.engine.absolute_path_for(&record.filepath);
-    crate::server::ffmpeg::stream_preview_mp4(&path, height).await
-}
-
-async fn share_preview_video_by_token(
-    State(state): State<AppState>,
-    auth: OptionalAuth,
-    Path((token, raw_key)): Path<(String, String)>,
-    Query(q): Query<SharePreviewVideoQuery>,
-) -> Response {
-    let share = match load_share_by_token(&state, &token).await {
-        Ok(s) => s,
-        Err(r) => return r,
-    };
-    preview_video_for_share(state, share, auth, raw_key, q.height).await
-}
-
-async fn share_preview_video_by_code(
-    State(state): State<AppState>,
-    auth: OptionalAuth,
-    Path((code, raw_key)): Path<(String, String)>,
-    Query(q): Query<SharePreviewVideoQuery>,
-) -> Response {
-    let share = match load_share_by_code(&state, &code).await {
-        Ok(s) => s,
-        Err(r) => return r,
-    };
-    preview_video_for_share(state, share, auth, raw_key, q.height).await
-}

@@ -11,15 +11,19 @@ use serde::Deserialize;
 use serde::Serialize;
 use tokio_util::io::ReaderStream;
 
-use crate::db::models::CrudAction;
+use chrono::{DateTime, Utc};
+
+use crate::db::models::{CrudAction, ShareAccessMode, ShareTargetKind};
 use crate::db::repository;
+use crate::db::shares;
 use crate::network::wireguard::{peer_config_snippet, WgSnapshot};
 use crate::server::folder_archive::{
     build_archive, filter_archive_entries, folder_download_basename, ArchiveFormat, TempArchive,
 };
 use crate::server::keys::{normalize_folder_prefix, normalize_object_key};
+use crate::server::media_access::{self, MediaGrant};
 use crate::server::s3_routes::{
-    delete_object_keyed_in_bucket, get_object_keyed, put_object_keyed_in_bucket,
+    delete_object_keyed_in_bucket, get_object_keyed_with_headers, put_object_keyed_in_bucket,
 };
 use crate::server::session_auth::{
     require_bucket_perm, resolve_bucket_id, AuthAccount,
@@ -40,16 +44,17 @@ pub fn router() -> Router<AppState> {
         .route("/api/v1/folders/archive", get(folder_archive))
         // axum 0.7 catch-all: /*key must be the final path segment.
         .route(
-            "/api/v1/objects/preview-video/*key",
-            get(web_preview_video),
-        )
-        .route(
             "/api/v1/objects/content/*key",
             get(web_get_object_content),
         )
         .route(
             "/api/v1/objects/*key",
             put(web_put_object).delete(web_delete_object),
+        )
+        .route("/api/v1/media-links", post(create_media_link))
+        .route(
+            "/api/v1/media/content/*key",
+            get(media_content_by_access),
         )
         .route("/api/v1/peers", get(peers))
         .route("/api/v1/wg/qr", get(wg_qr))
@@ -82,13 +87,6 @@ async fn stats(State(state): State<AppState>, _auth: AuthAccount) -> Response {
 #[derive(Deserialize)]
 struct BucketQuery {
     bucket: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct PreviewVideoQuery {
-    bucket: Option<String>,
-    /// Omit / original / 0 = full resolution; else 720|480|320|114.
-    height: Option<String>,
 }
 
 async fn objects(
@@ -378,6 +376,7 @@ async fn web_get_object_content(
     auth: AuthAccount,
     Path(raw_key): Path<String>,
     Query(q): Query<BucketQuery>,
+    headers: HeaderMap,
 ) -> Response {
     let key = match normalize_object_key(&raw_key) {
         Ok(k) => k,
@@ -392,7 +391,7 @@ async fn web_get_object_content(
     }
     // Ensure object belongs to bucket (get_object_keyed looks up by filename only).
     match repository::get_object_by_filename_in_bucket(&state.db, &key, bucket_id).await {
-        Ok(Some(_)) => get_object_keyed(state, key).await,
+        Ok(Some(_)) => get_object_keyed_with_headers(state, key, &headers).await,
         Ok(None) => (
             StatusCode::NOT_FOUND,
             [(header::CONTENT_TYPE, "application/xml")],
@@ -403,36 +402,195 @@ async fn web_get_object_content(
     }
 }
 
-async fn web_preview_video(
+#[derive(Deserialize)]
+struct MediaLinkBody {
+    bucket: Option<String>,
+    key: String,
+    kind: ShareTargetKind,
+}
+
+#[derive(Serialize)]
+struct MediaLinkResponse {
+    url: String,
+    /// Relative path (for clients that prepend origin themselves).
+    path: String,
+    access_mode: Option<ShareAccessMode>,
+    auth: &'static str,
+    expires_at: Option<DateTime<Utc>>,
+}
+
+async fn create_media_link(
     State(state): State<AppState>,
     auth: AuthAccount,
-    Path(raw_key): Path<String>,
-    Query(q): Query<PreviewVideoQuery>,
+    Json(body): Json<MediaLinkBody>,
 ) -> Response {
-    let key = match normalize_object_key(&raw_key) {
-        Ok(k) => k,
-        Err(msg) => return (StatusCode::BAD_REQUEST, msg).into_response(),
-    };
-    let height = match crate::server::ffmpeg::parse_preview_height(q.height.as_deref()) {
-        Ok(h) => h,
-        Err(msg) => return (StatusCode::BAD_REQUEST, msg).into_response(),
-    };
-    let (bucket_id, _) = match resolve_bucket_id(&state, q.bucket.as_deref()).await {
+    let (bucket_id, bucket_name) = match resolve_bucket_id(&state, body.bucket.as_deref()).await {
         Ok(v) => v,
         Err(r) => return r,
     };
     if let Err(r) = require_bucket_perm(&state, auth.id(), bucket_id, CrudAction::Read).await {
         return r;
     }
-    let record = match repository::get_object_by_filename_in_bucket(&state.db, &key, bucket_id)
-        .await
-    {
-        Ok(Some(r)) => r,
-        Ok(None) => return (StatusCode::NOT_FOUND, "object not found").into_response(),
-        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+
+    match body.kind {
+        ShareTargetKind::Folder => {
+            let prefix = match normalize_folder_prefix(&body.key) {
+                Ok(p) => p,
+                Err(msg) => return (StatusCode::BAD_REQUEST, msg).into_response(),
+            };
+            let rows = match shares::list_folder_shares_for_prefix(&state.db, bucket_id, &prefix)
+                .await
+            {
+                Ok(r) => r,
+                Err(err) => {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
+                }
+            };
+            let Some(share) = shares::prefer_share_for_link(&rows, None) else {
+                return (
+                    StatusCode::CONFLICT,
+                    "create a share for this folder first",
+                )
+                    .into_response();
+            };
+            let mut path = media_access::share_page_path(share);
+            let (auth_kind, expires_at) = if media_access::share_needs_access_token(share.access_mode)
+            {
+                match media_access::mint_share_token(&state.config, share) {
+                    Ok((tok, exp)) => {
+                        path = media_access::append_access_query(&path, &tok);
+                        ("token", Some(exp))
+                    }
+                    Err(err) => {
+                        return (StatusCode::INTERNAL_SERVER_ERROR, err).into_response();
+                    }
+                }
+            } else {
+                ("none", share.expires_at)
+            };
+            Json(MediaLinkResponse {
+                url: path.clone(),
+                path,
+                access_mode: Some(share.access_mode),
+                auth: auth_kind,
+                expires_at,
+            })
+            .into_response()
+        }
+        ShareTargetKind::File => {
+            let key = match normalize_object_key(&body.key) {
+                Ok(k) => k,
+                Err(msg) => return (StatusCode::BAD_REQUEST, msg).into_response(),
+            };
+            if repository::get_object_by_filename_in_bucket(&state.db, &key, bucket_id)
+                .await
+                .ok()
+                .flatten()
+                .is_none()
+            {
+                return (StatusCode::NOT_FOUND, "object not found").into_response();
+            }
+            let rows = match shares::list_shares_covering_key(&state.db, bucket_id, &key).await {
+                Ok(r) => r,
+                Err(err) => {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
+                }
+            };
+            if let Some(share) = shares::prefer_share_for_link(&rows, Some(&key)) {
+                let mut path = media_access::share_content_path(share, &key);
+                let (auth_kind, expires_at) =
+                    if media_access::share_needs_access_token(share.access_mode) {
+                        match media_access::mint_share_token(&state.config, share) {
+                            Ok((tok, exp)) => {
+                                path = media_access::append_access_query(&path, &tok);
+                                ("token", Some(exp))
+                            }
+                            Err(err) => {
+                                return (StatusCode::INTERNAL_SERVER_ERROR, err).into_response();
+                            }
+                        }
+                    } else {
+                        ("none", share.expires_at)
+                    };
+                return Json(MediaLinkResponse {
+                    url: path.clone(),
+                    path,
+                    access_mode: Some(share.access_mode),
+                    auth: auth_kind,
+                    expires_at,
+                })
+                .into_response();
+            }
+
+            // Personal short-lived link.
+            let (tok, exp) =
+                match media_access::mint_personal_token(&state.config, auth.id(), bucket_id, &key) {
+                    Ok(v) => v,
+                    Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err).into_response(),
+                };
+            let path = media_access::append_access_query(
+                &media_access::personal_content_path(&bucket_name, &key),
+                &tok,
+            );
+            Json(MediaLinkResponse {
+                url: path.clone(),
+                path,
+                access_mode: None,
+                auth: "token",
+                expires_at: Some(exp),
+            })
+            .into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct MediaContentQuery {
+    bucket: Option<String>,
+    access: String,
+}
+
+async fn media_content_by_access(
+    State(state): State<AppState>,
+    Path(raw_key): Path<String>,
+    Query(q): Query<MediaContentQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let key = match normalize_object_key(&raw_key) {
+        Ok(k) => k,
+        Err(msg) => return (StatusCode::BAD_REQUEST, msg).into_response(),
     };
-    let path = state.engine.absolute_path_for(&record.filepath);
-    crate::server::ffmpeg::stream_preview_mp4(&path, height).await
+    let grant = match media_access::verify_access_token(&state.config, &q.access) {
+        Ok(g) => g,
+        Err(err) => return (StatusCode::UNAUTHORIZED, err).into_response(),
+    };
+    let MediaGrant::Personal {
+        bucket_id,
+        key: tok_key,
+        ..
+    } = grant
+    else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            "access token is not a personal media grant",
+        )
+            .into_response();
+    };
+    if tok_key != key {
+        return (StatusCode::FORBIDDEN, "key mismatch").into_response();
+    }
+    let (resolved_bucket_id, _) = match resolve_bucket_id(&state, q.bucket.as_deref()).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    if resolved_bucket_id != bucket_id {
+        return (StatusCode::FORBIDDEN, "bucket mismatch").into_response();
+    }
+    match repository::get_object_by_filename_in_bucket(&state.db, &key, bucket_id).await {
+        Ok(Some(_)) => get_object_keyed_with_headers(state, key, &headers).await,
+        Ok(None) => (StatusCode::NOT_FOUND, "object not found").into_response(),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    }
 }
 
 async fn peers(State(state): State<AppState>, auth: AuthAccount) -> Response {

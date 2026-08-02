@@ -186,39 +186,48 @@
     if (qualityWrap) qualityWrap.hidden = !visible;
   }
 
-  function previewVideoUrl(key, height) {
-    const h = height == null ? selectedHeight() : height;
-    if (window.MyS3 && typeof window.MyS3.previewVideoUrl === 'function') {
-      return window.MyS3.previewVideoUrl(key, h);
-    }
-    const bucket =
-      window.MyS3 && typeof window.MyS3.getBucket === 'function'
-        ? window.MyS3.getBucket()
-        : 'storage';
-    const params = new URLSearchParams();
-    params.set('bucket', bucket || 'storage');
-    if (h && h !== 'original') params.set('height', String(h));
-    else if (h === 'original') params.set('height', 'original');
-    return (
-      '/api/v1/objects/preview-video/' + encodeKeyPath(key) + '?' + params.toString()
-    );
-  }
-
-  function fetchContent(key) {
+  function fetchContent(key, signal) {
     const url = contentUrl(key);
-    if (window.MyS3 && typeof window.MyS3.api === 'function') {
-      return window.MyS3.api(url);
-    }
-    return fetch(url, { credentials: 'same-origin' });
-  }
-
-  function fetchPreviewVideo(key, height, signal) {
-    const url = previewVideoUrl(key, height);
     const opts = signal ? { signal } : {};
     if (window.MyS3 && typeof window.MyS3.api === 'function') {
       return window.MyS3.api(url, opts);
     }
     return fetch(url, Object.assign({ credentials: 'same-origin' }, opts));
+  }
+
+  /**
+   * URL usable as <video src> (must carry access token or be publicly fetchable).
+   * Bearer session auth cannot be sent by the media element, so mint a media-link.
+   */
+  async function resolveNativePlayUrl(key, signal) {
+    const direct = contentUrl(key);
+    if (/[?&]access=/.test(direct) || /\/shares\//.test(direct)) {
+      return direct;
+    }
+    const bucket =
+      window.MyS3 && typeof window.MyS3.getBucket === 'function'
+        ? window.MyS3.getBucket()
+        : 'storage';
+    const body = JSON.stringify({ bucket: bucket || 'storage', key, kind: 'file' });
+    const opts = {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    };
+    if (signal) opts.signal = signal;
+    let res;
+    if (window.MyS3 && typeof window.MyS3.api === 'function') {
+      res = await window.MyS3.api('/api/v1/media-links', opts);
+    } else {
+      res = await fetch('/api/v1/media-links', Object.assign({ credentials: 'same-origin' }, opts));
+    }
+    if (!res.ok) {
+      throw new Error((await res.text()) || 'Failed to create media link');
+    }
+    const data = await res.json();
+    const path = data.path || data.url || '';
+    if (!path) throw new Error('Media link response missing path');
+    return path;
   }
 
   function doDownload(key) {
@@ -398,42 +407,88 @@
     return objectUrl;
   }
 
-  async function loadVideoPreviewUrl(key, height) {
+  async function stopVideoPreview() {
     if (videoAbort) {
       videoAbort.abort();
       videoAbort = null;
     }
-    const controller = new AbortController();
-    videoAbort = controller;
-    try {
-      const res = await fetchPreviewVideo(key, height, controller.signal);
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text || res.statusText || 'Video preview failed');
-      }
-      const blob = await res.blob();
-      if (!blob || blob.size === 0) {
-        throw new Error('Video preview produced no data (is ffmpeg installed?)');
-      }
-      revokeObjectUrl();
-      objectUrl = URL.createObjectURL(blob);
-      return objectUrl;
-    } finally {
-      if (videoAbort === controller) videoAbort = null;
+    if (window.MyS3VideoPreview && typeof window.MyS3VideoPreview.destroy === 'function') {
+      await window.MyS3VideoPreview.destroy();
     }
   }
 
   async function renderVideoPreview(key) {
     setMdToggleVisible(false);
-    setQualityVisible(true);
     videoKindOpen = true;
-    bodyEl.innerHTML = `<div class="preview-loading">Transcoding preview…</div>`;
-    const url = await loadVideoPreviewUrl(key, selectedHeight());
-    if (currentKey !== key) return;
+    await stopVideoPreview();
+    const controller = new AbortController();
+    videoAbort = controller;
+
+    const native =
+      window.MyS3VideoPreview &&
+      typeof window.MyS3VideoPreview.isNativePlayable === 'function' &&
+      window.MyS3VideoPreview.isNativePlayable(key);
+    // Quality downscale needs wasm; native progressive play ignores height.
+    setQualityVisible(!native);
+
+    if (!window.MyS3VideoPreview || typeof window.MyS3VideoPreview.play !== 'function') {
+      throw new Error('Video preview module failed to load');
+    }
+    if (!window.MyS3VideoPreview.isSupported()) {
+      throw new Error('This browser cannot preview video.');
+    }
+    if (
+      !native &&
+      typeof window.MyS3VideoPreview.canTranscode === 'function' &&
+      !window.MyS3VideoPreview.canTranscode()
+    ) {
+      throw new Error(
+        'This browser cannot preview this format (needs MediaSource and Origin Private File System).'
+      );
+    }
+
     bodyEl.innerHTML = `
-      <div class="preview-media">
-        <video controls playsinline src="${escHtml(url)}"></video>
+      <div class="preview-media preview-media-video">
+        <div class="preview-loading" id="preview-video-status">Loading…</div>
+        <video id="preview-video-el" controls playsinline></video>
       </div>`;
+    const videoEl = bodyEl.querySelector('#preview-video-el');
+    const statusEl = bodyEl.querySelector('#preview-video-status');
+    if (!videoEl) throw new Error('Video element missing');
+
+    const setStatus = (msg) => {
+      if (!statusEl) return;
+      if (!msg) {
+        statusEl.hidden = true;
+        statusEl.textContent = '';
+        return;
+      }
+      statusEl.hidden = false;
+      statusEl.textContent = msg;
+    };
+
+    try {
+      let nativeUrl = null;
+      if (native) {
+        setStatus('Preparing stream…');
+        nativeUrl = await resolveNativePlayUrl(key, controller.signal);
+      }
+      await window.MyS3VideoPreview.play({
+        video: videoEl,
+        key,
+        nativeUrl,
+        height: native ? 'original' : selectedHeight(),
+        signal: controller.signal,
+        onStatus: setStatus,
+        fetchContent: () => fetchContent(key, controller.signal),
+      });
+      if (currentKey !== key) return;
+      setStatus('');
+      // Keep `videoAbort` until stop/close so in-flight slice encodes can be cancelled.
+    } catch (err) {
+      if (videoAbort === controller) videoAbort = null;
+      throw err;
+    }
   }
 
   function formatBytesLocal(n) {
@@ -450,10 +505,7 @@
    * @param {string} key
    */
   async function openPreview(key) {
-    if (videoAbort) {
-      videoAbort.abort();
-      videoAbort = null;
-    }
+    await stopVideoPreview();
     currentKey = key;
     cachedText = null;
     mdMode = 'preview';
@@ -513,10 +565,7 @@
   }
 
   function closePreview() {
-    if (videoAbort) {
-      videoAbort.abort();
-      videoAbort = null;
-    }
+    stopVideoPreview();
     modal.hidden = true;
     document.body.classList.remove('preview-open');
     currentKey = null;

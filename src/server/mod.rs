@@ -1,8 +1,8 @@
 pub mod auth_sigv4;
 pub mod etag_rehash;
-pub mod ffmpeg;
 pub mod folder_archive;
 pub mod keys;
+pub mod media_access;
 pub mod purge;
 pub mod s3_routes;
 pub mod session_auth;

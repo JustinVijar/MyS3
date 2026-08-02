@@ -4,6 +4,7 @@ use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, put};
 use axum::Router;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
 use tracing::error;
 
@@ -222,6 +223,48 @@ async fn get_object(State(state): State<AppState>, Path(raw_key): Path<String>) 
 
 /// Shared GET (stream download) used by S3 and open web API routes.
 pub async fn get_object_keyed(state: AppState, key: String) -> Response {
+    get_object_keyed_with_headers(state, key, &HeaderMap::new()).await
+}
+
+/// Parse a single-range `bytes=` header. Returns `(start, end_inclusive)`.
+fn parse_bytes_range(range_val: &str, file_len: u64) -> Option<(u64, u64)> {
+    let s = range_val.trim();
+    let rest = s.strip_prefix("bytes=")?.trim();
+    // Only support a single range (VLC/browsers typically send one).
+    let unit = rest.split(',').next()?.trim();
+    if file_len == 0 {
+        return None;
+    }
+    if let Some(suffix) = unit.strip_prefix('-') {
+        let n: u64 = suffix.parse().ok()?;
+        if n == 0 {
+            return None;
+        }
+        let n = n.min(file_len);
+        return Some((file_len - n, file_len - 1));
+    }
+    let (start_s, end_s) = unit.split_once('-')?;
+    let start: u64 = start_s.parse().ok()?;
+    if start >= file_len {
+        return None;
+    }
+    let end = if end_s.is_empty() {
+        file_len - 1
+    } else {
+        end_s.parse::<u64>().ok()?.min(file_len - 1)
+    };
+    if end < start {
+        return None;
+    }
+    Some((start, end))
+}
+
+/// Like [`get_object_keyed`] but honors `Range` for 206 Partial Content (VLC seek).
+pub async fn get_object_keyed_with_headers(
+    state: AppState,
+    key: String,
+    req_headers: &HeaderMap,
+) -> Response {
     let record = match repository::get_object_by_filename(&state.db, &key).await {
         Ok(Some(r)) => r,
         Ok(None) => {
@@ -235,30 +278,37 @@ pub async fn get_object_keyed(state: AppState, key: String) -> Response {
         Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
     };
 
-    let file = match state.engine.open_read(&record.filepath).await {
+    let file_len = record.filesize_bytes.max(0) as u64;
+    let range_hdr = req_headers
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok());
+    let parsed_range = range_hdr.and_then(|r| parse_bytes_range(r, file_len));
+
+    if range_hdr.is_some() && parsed_range.is_none() && file_len > 0 {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+        headers.insert(
+            header::CONTENT_RANGE,
+            HeaderValue::from_str(&format!("bytes */{file_len}"))
+                .unwrap_or(HeaderValue::from_static("bytes */0")),
+        );
+        return (StatusCode::RANGE_NOT_SATISFIABLE, headers).into_response();
+    }
+
+    let mut file = match state.engine.open_read(&record.filepath).await {
         Ok(f) => f,
         Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
     };
-
-    let _ = state
-        .events
-        .send(ServerEvent::BytesDownloaded(record.filesize_bytes as usize));
 
     let mime = mime_guess::from_path(&record.original_filename)
         .first_or_octet_stream()
         .to_string();
 
-    let stream = ReaderStream::new(file);
-    let body = Body::from_stream(stream);
-
     let mut headers = HeaderMap::new();
+    headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
     headers.insert(
         header::ETAG,
         HeaderValue::from_str(&format!("\"{}\"", record.etag)).unwrap_or(HeaderValue::from_static("\"\"")),
-    );
-    headers.insert(
-        header::CONTENT_LENGTH,
-        HeaderValue::from_str(&record.filesize_bytes.to_string()).unwrap_or(HeaderValue::from_static("0")),
     );
     headers.insert(
         header::CONTENT_TYPE,
@@ -276,7 +326,43 @@ pub async fn get_object_keyed(state: AppState, key: String) -> Response {
         );
     }
 
-    (StatusCode::OK, headers, body).into_response()
+    let (status, content_len) = if let Some((start, end)) = parsed_range {
+        if let Err(err) = file.seek(std::io::SeekFrom::Start(start)).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
+        }
+        let len = end - start + 1;
+        let limited = file.take(len);
+        let stream = ReaderStream::new(limited);
+        let body = Body::from_stream(stream);
+        headers.insert(
+            header::CONTENT_LENGTH,
+            HeaderValue::from_str(&len.to_string()).unwrap_or(HeaderValue::from_static("0")),
+        );
+        headers.insert(
+            header::CONTENT_RANGE,
+            HeaderValue::from_str(&format!("bytes {start}-{end}/{file_len}"))
+                .unwrap_or(HeaderValue::from_static("bytes 0-0/0")),
+        );
+        let _ = state
+            .events
+            .send(ServerEvent::BytesDownloaded(len as usize));
+        return (StatusCode::PARTIAL_CONTENT, headers, body).into_response();
+    } else {
+        (StatusCode::OK, file_len)
+    };
+
+    let _ = state
+        .events
+        .send(ServerEvent::BytesDownloaded(content_len as usize));
+
+    headers.insert(
+        header::CONTENT_LENGTH,
+        HeaderValue::from_str(&content_len.to_string()).unwrap_or(HeaderValue::from_static("0")),
+    );
+
+    let stream = ReaderStream::new(file);
+    let body = Body::from_stream(stream);
+    (status, headers, body).into_response()
 }
 
 async fn delete_object(State(state): State<AppState>, Path(raw_key): Path<String>) -> Response {

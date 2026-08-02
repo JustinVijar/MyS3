@@ -1,0 +1,78 @@
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:renderVideoPreview","message":"preview start","data":{"hasModule":true,"supported":true,"native":true,"height":"720","keyExt":"mp4"},"timestamp":1785676156715}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Preparing stream…"},"timestamp":1785676156717}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"video-preview.js:NativeSession.start","message":"native progressive play","data":{"urlKind":"plain","urlLen":163},"timestamp":1785676156764}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"video-preview.js:play","message":"play route","data":{"useNative":true,"hasNativeUrl":true,"ext":"mp4","forceTranscode":false,"height":"original"},"timestamp":1785676156764}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Starting preview…"},"timestamp":1785676156764}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"video-preview.js:NativeSession.start","message":"native play attached","data":{"readyState":4,"networkState":2,"paused":false},"timestamp":1785676156917}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:playResolved","message":"play() resolved","data":{"native":true,"readyState":4,"paused":false,"networkState":2,"buffered":2.367833},"timestamp":1785676156918}
+{"sessionId":"667c97","runId":"pre-fix","hypothesisId":"B","location":"video-preview.js:ensureFfmpeg","message":"ffmpeg load start","data":{},"timestamp":1785676163380}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:renderVideoPreview","message":"preview start","data":{"hasModule":true,"supported":true,"native":false,"height":"720","keyExt":"AVI"},"timestamp":1785676163378}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Loading transcoder…"},"timestamp":1785676163379}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"video-preview.js:play","message":"play route","data":{"useNative":false,"hasNativeUrl":false,"ext":"avi","forceTranscode":false,"height":"720"},"timestamp":1785676163379}
+{"sessionId":"667c97","runId":"pre-fix","hypothesisId":"B","location":"video-preview.js:ensureFfmpeg","message":"libs imported","data":{},"timestamp":1785676163396}
+{"sessionId":"667c97","runId":"pre-fix","hypothesisId":"B","location":"video-preview.js:ensureFfmpeg","message":"blob URLs ready, calling load()","data":{"coreLen":63,"wasmLen":63},"timestamp":1785676163537}
+{"sessionId":"667c97","runId":"pre-fix","hypothesisId":"B","location":"video-preview.js:ensureFfmpeg","message":"ffmpeg load complete","data":{"loaded":true},"timestamp":1785676163599}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Downloading…"},"timestamp":1785676163600}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Downloading… 20%"},"timestamp":1785676163808}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Downloading… 30%"},"timestamp":1785676164168}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Downloading… 40%"},"timestamp":1785676164515}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Downloading… 50%"},"timestamp":1785676164675}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Downloading… 60%"},"timestamp":1785676164959}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Downloading… 70%"},"timestamp":1785676165254}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Downloading… 80%"},"timestamp":1785676165579}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Downloading… 90%"},"timestamp":1785676165858}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Downloading… 99%"},"timestamp":1785676166140}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Preparing…"},"timestamp":1785676166167}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Starting preview…"},"timestamp":1785676166257}
+{"sessionId":"667c97","runId":"pre-fix","hypothesisId":"C,D","location":"video-preview.js:start","message":"first slice begin","data":{"duration":14.75,"inputPath":"/input/in-1785676163619-yegd7suy.bin","fileBytes":15641740,"height":"720"},"timestamp":1785676166258}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Buffering… 0%"},"timestamp":1785676166258}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:playError","message":"play() threw","data":{"name":"AbortError","msg":"Message # 4 was aborted"},"timestamp":1785676171561}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:renderVideoPreview","message":"preview start","data":{"hasModule":true,"supported":true,"native":false,"height":"original","keyExt":"AVI"},"timestamp":1785676175063}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"video-preview.js:play","message":"play route","data":{"useNative":false,"hasNativeUrl":false,"ext":"avi","forceTranscode":false,"height":"original"},"timestamp":1785676175063}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Loading transcoder…"},"timestamp":1785676175064}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Downloading…"},"timestamp":1785676175064}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Downloading… 10%"},"timestamp":1785676175190}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Downloading… 20%"},"timestamp":1785676175697}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Downloading… 30%"},"timestamp":1785676176185}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Downloading… 40%"},"timestamp":1785676176734}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Downloading… 50%"},"timestamp":1785676177022}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Downloading… 60%"},"timestamp":1785676177336}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Downloading… 70%"},"timestamp":1785676177665}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Downloading… 80%"},"timestamp":1785676177956}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Downloading… 90%"},"timestamp":1785676178300}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Downloading… 99%"},"timestamp":1785676178622}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Preparing…"},"timestamp":1785676178666}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Starting preview…"},"timestamp":1785676178736}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Buffering… 0%"},"timestamp":1785676178737}
+{"sessionId":"667c97","runId":"pre-fix","hypothesisId":"C,D","location":"video-preview.js:start","message":"first slice begin","data":{"duration":14.75,"inputPath":"/input/in-1785676175072-pfwpouzd.bin","fileBytes":15641740,"height":"original"},"timestamp":1785676178737}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:renderVideoPreview","message":"preview start","data":{"hasModule":true,"supported":true,"native":false,"height":"original","keyExt":"AVI"},"timestamp":1785676195856}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Loading transcoder…"},"timestamp":1785676195857}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Downloading…"},"timestamp":1785676195857}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"video-preview.js:play","message":"play route","data":{"useNative":false,"hasNativeUrl":false,"ext":"avi","forceTranscode":false,"height":"original"},"timestamp":1785676195857}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Downloading… 10%"},"timestamp":1785676196058}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Downloading… 20%"},"timestamp":1785676196436}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Downloading… 30%"},"timestamp":1785676196825}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Downloading… 40%"},"timestamp":1785676197114}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Downloading… 50%"},"timestamp":1785676197490}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Downloading… 60%"},"timestamp":1785676197803}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Downloading… 70%"},"timestamp":1785676198115}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Downloading… 80%"},"timestamp":1785676198422}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Downloading… 90%"},"timestamp":1785676198748}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Downloading… 99%"},"timestamp":1785676199047}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Preparing…"},"timestamp":1785676199073}
+{"sessionId":"667c97","runId":"pre-fix","hypothesisId":"D,E","location":"video-preview.js:start","message":"first slice done","data":{"result":"done","nextStart":0},"timestamp":1785676208059}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:playResolved","message":"play() resolved","data":{"native":false,"readyState":0,"paused":true,"networkState":0,"buffered":0},"timestamp":1785676208059}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Starting preview…"},"timestamp":1785676208148}
+{"sessionId":"667c97","runId":"pre-fix","hypothesisId":"C,D","location":"video-preview.js:start","message":"first slice begin","data":{"duration":14.75,"inputPath":"/input/in-1785676195868-gp8981qt.bin","fileBytes":15641740,"height":"original"},"timestamp":1785676208148}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Buffering… 0%"},"timestamp":1785676208148}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Buffering… 27%"},"timestamp":1785676248373}
+{"sessionId":"667c97","runId":"pre-fix","hypothesisId":"D,E","location":"video-preview.js:start","message":"first slice done","data":{"result":"ok","nextStart":4},"timestamp":1785676248372}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:playResolved","message":"play() resolved","data":{"native":false,"readyState":1,"paused":true,"networkState":2,"buffered":4.070732},"timestamp":1785676248374}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Buffering… 54%"},"timestamp":1785676322291}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:renderVideoPreview","message":"preview start","data":{"hasModule":true,"supported":true,"native":true,"height":"original","keyExt":"mp4"},"timestamp":1785676328241}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"video-preview.js:play","message":"play route","data":{"useNative":true,"hasNativeUrl":true,"ext":"mp4","forceTranscode":false,"height":"original"},"timestamp":1785676328286}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Preparing stream…"},"timestamp":1785676328241}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:setStatus","message":"status update","data":{"msg":"Starting preview…"},"timestamp":1785676328286}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"video-preview.js:NativeSession.start","message":"native progressive play","data":{"urlKind":"plain","urlLen":163},"timestamp":1785676328286}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"video-preview.js:NativeSession.start","message":"native play attached","data":{"readyState":4,"networkState":2,"paused":false},"timestamp":1785676328462}
+{"sessionId":"667c97","runId":"post-fix","hypothesisId":"C","location":"preview.js:playResolved","message":"play() resolved","data":{"native":true,"readyState":4,"paused":false,"networkState":2,"buffered":2.367833},"timestamp":1785676328462}

@@ -246,6 +246,85 @@ pub async fn list_shares_for_target(
     Ok(rows)
 }
 
+/// Active (non-revoked) shares that cover `key` in `bucket_id`: exact file shares or parent folders.
+/// Caller should filter with `share_is_usable`. Prefer public, then exact file match.
+pub async fn list_shares_covering_key(
+    pool: &SqlitePool,
+    bucket_id: i64,
+    key: &str,
+) -> Result<Vec<ShareLinkRecord>> {
+    let rows = sqlx::query_as::<_, ShareLinkRecord>(
+        r#"
+        SELECT * FROM share_link
+        WHERE bucket_id = ?1
+          AND revoked_at IS NULL
+          AND (
+            (target_kind = 'file' AND target_key = ?2)
+            OR (target_kind = 'folder' AND ?2 LIKE (target_key || '%'))
+          )
+        ORDER BY created_at DESC
+        "#,
+    )
+    .bind(bucket_id)
+    .bind(key)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+/// Active folder shares with exact `target_key` prefix.
+pub async fn list_folder_shares_for_prefix(
+    pool: &SqlitePool,
+    bucket_id: i64,
+    prefix: &str,
+) -> Result<Vec<ShareLinkRecord>> {
+    let rows = sqlx::query_as::<_, ShareLinkRecord>(
+        r#"
+        SELECT * FROM share_link
+        WHERE bucket_id = ?1
+          AND revoked_at IS NULL
+          AND target_kind = 'folder'
+          AND target_key = ?2
+        ORDER BY created_at DESC
+        "#,
+    )
+    .bind(bucket_id)
+    .bind(prefix)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+/// Pick best covering share: public first, then exact file match, then newest.
+pub fn prefer_share_for_link<'a>(
+    shares: &'a [ShareLinkRecord],
+    file_key: Option<&str>,
+) -> Option<&'a ShareLinkRecord> {
+    let now = Utc::now();
+    let usable: Vec<&ShareLinkRecord> = shares
+        .iter()
+        .filter(|s| share_is_usable(s, now).is_ok())
+        .collect();
+    if usable.is_empty() {
+        return None;
+    }
+    if let Some(s) = usable
+        .iter()
+        .find(|s| s.access_mode == ShareAccessMode::Public)
+    {
+        return Some(*s);
+    }
+    if let Some(key) = file_key {
+        if let Some(s) = usable
+            .iter()
+            .find(|s| s.target_kind == ShareTargetKind::File && s.target_key == key)
+        {
+            return Some(*s);
+        }
+    }
+    usable.into_iter().next()
+}
+
 pub async fn revoke_share(
     pool: &SqlitePool,
     share_id: i64,

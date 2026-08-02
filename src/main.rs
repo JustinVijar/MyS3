@@ -53,12 +53,6 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("ensure local cluster node")?;
 
-    if !server::ffmpeg::ffmpeg_available() {
-        tracing::warn!(
-            "ffmpeg not found on PATH — video preview for non-browser-native formats will be unavailable"
-        );
-    }
-
     let wg = Arc::new(WireGuardRuntime::start(&config)?);
     let (events_tx, events_rx) = mpsc::unbounded_channel::<ServerEvent>();
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
