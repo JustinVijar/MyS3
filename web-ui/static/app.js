@@ -126,7 +126,11 @@ function navigateToPrefix(prefix) {
 const IMAGE_EXT = new Set([
   'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'ico', 'avif', 'heic', 'tif', 'tiff',
 ]);
-const VIDEO_EXT = new Set(['mp4', 'webm', 'mov', 'mkv', 'avi', 'm4v']);
+const VIDEO_EXT = new Set([
+  'mp4', 'webm', 'mov', 'mkv', 'avi', 'm4v', 'ogg', 'ogv',
+  'wmv', 'flv', 'mpeg', 'mpg', 'mpe', '3gp', '3g2',
+  'ts', 'm2ts', 'mts', 'vob', 'asf', 'f4v', 'rm', 'rmvb',
+]);
 const AUDIO_EXT = new Set(['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac', 'opus']);
 const TEXT_EXT = new Set([
   'txt', 'md', 'markdown', 'json', 'js', 'ts', 'tsx', 'jsx', 'css', 'html', 'htm', 'xml',

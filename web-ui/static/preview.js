@@ -8,6 +8,8 @@
   ]);
   const VIDEO_EXT = new Set([
     'mp4', 'webm', 'ogg', 'ogv', 'mov', 'm4v', 'mkv',
+    'avi', 'wmv', 'flv', 'mpeg', 'mpg', 'mpe', '3gp', '3g2',
+    'ts', 'm2ts', 'mts', 'vob', 'asf', 'f4v', 'rm', 'rmvb',
   ]);
   const MARKDOWN_EXT = new Set(['md', 'markdown', 'mdown', 'mkd']);
 
@@ -118,6 +120,8 @@
   const titleEl = document.getElementById('preview-title');
   const bodyEl = document.getElementById('preview-body');
   const mdToggle = document.getElementById('preview-md-toggle');
+  const qualityWrap = document.getElementById('preview-quality-wrap');
+  const qualitySelect = document.getElementById('preview-quality');
   const downloadBtn = document.getElementById('preview-download');
   const closeBtn = document.getElementById('preview-close');
 
@@ -134,6 +138,9 @@
   let cachedText = null;
   /** @type {string|null} */
   let objectUrl = null;
+  /** @type {AbortController|null} */
+  let videoAbort = null;
+  let videoKindOpen = false;
 
   function fileName(key) {
     const parts = key.split('/');
@@ -167,12 +174,45 @@
     );
   }
 
+  function selectedHeight() {
+    if (!qualitySelect) return '720';
+    return qualitySelect.value || '720';
+  }
+
+  function setQualityVisible(visible) {
+    if (qualityWrap) qualityWrap.hidden = !visible;
+  }
+
+  function previewVideoUrl(key, height) {
+    const bucket =
+      window.MyS3 && typeof window.MyS3.getBucket === 'function'
+        ? window.MyS3.getBucket()
+        : 'storage';
+    const params = new URLSearchParams();
+    params.set('bucket', bucket || 'storage');
+    const h = height == null ? selectedHeight() : height;
+    if (h && h !== 'original') params.set('height', String(h));
+    else if (h === 'original') params.set('height', 'original');
+    return (
+      '/api/v1/objects/preview-video/' + encodeKeyPath(key) + '?' + params.toString()
+    );
+  }
+
   function fetchContent(key) {
     const url = contentUrl(key);
     if (window.MyS3 && typeof window.MyS3.api === 'function') {
       return window.MyS3.api(url);
     }
     return fetch(url, { credentials: 'same-origin' });
+  }
+
+  function fetchPreviewVideo(key, height, signal) {
+    const url = previewVideoUrl(key, height);
+    const opts = signal ? { signal } : {};
+    if (window.MyS3 && typeof window.MyS3.api === 'function') {
+      return window.MyS3.api(url, opts);
+    }
+    return fetch(url, Object.assign({ credentials: 'same-origin' }, opts));
   }
 
   function doDownload(key) {
@@ -352,6 +392,44 @@
     return objectUrl;
   }
 
+  async function loadVideoPreviewUrl(key, height) {
+    if (videoAbort) {
+      videoAbort.abort();
+      videoAbort = null;
+    }
+    const controller = new AbortController();
+    videoAbort = controller;
+    try {
+      const res = await fetchPreviewVideo(key, height, controller.signal);
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || res.statusText || 'Video preview failed');
+      }
+      const blob = await res.blob();
+      if (!blob || blob.size === 0) {
+        throw new Error('Video preview produced no data (is ffmpeg installed?)');
+      }
+      revokeObjectUrl();
+      objectUrl = URL.createObjectURL(blob);
+      return objectUrl;
+    } finally {
+      if (videoAbort === controller) videoAbort = null;
+    }
+  }
+
+  async function renderVideoPreview(key) {
+    setMdToggleVisible(false);
+    setQualityVisible(true);
+    videoKindOpen = true;
+    bodyEl.innerHTML = `<div class="preview-loading">Transcoding preview…</div>`;
+    const url = await loadVideoPreviewUrl(key, selectedHeight());
+    if (currentKey !== key) return;
+    bodyEl.innerHTML = `
+      <div class="preview-media">
+        <video controls playsinline src="${escHtml(url)}"></video>
+      </div>`;
+  }
+
   function formatBytesLocal(n) {
     if (window.MyS3 && typeof window.MyS3.formatBytes === 'function') {
       return window.MyS3.formatBytes(n);
@@ -366,14 +444,20 @@
    * @param {string} key
    */
   async function openPreview(key) {
+    if (videoAbort) {
+      videoAbort.abort();
+      videoAbort = null;
+    }
     currentKey = key;
     cachedText = null;
     mdMode = 'preview';
+    videoKindOpen = false;
     revokeObjectUrl();
     titleEl.textContent = fileName(key);
     titleEl.title = key;
     bodyEl.innerHTML = `<div class="preview-loading">Loading…</div>`;
     setMdToggleVisible(false);
+    setQualityVisible(false);
     modal.hidden = false;
     document.body.classList.add('preview-open');
     closeBtn.focus();
@@ -383,22 +467,19 @@
     try {
       if (kindHint === 'image') {
         setMdToggleVisible(false);
+        setQualityVisible(false);
         const url = await loadMediaUrl(key);
         bodyEl.innerHTML = `<div class="preview-media"><img alt="${escHtml(fileName(key))}" src="${escHtml(url)}" /></div>`;
         return;
       }
 
       if (kindHint === 'video') {
-        setMdToggleVisible(false);
-        const url = await loadMediaUrl(key);
-        bodyEl.innerHTML = `
-          <div class="preview-media">
-            <video controls playsinline src="${escHtml(url)}"></video>
-          </div>`;
+        await renderVideoPreview(key);
         return;
       }
 
       if (kindHint === 'markdown' || kindHint === 'text') {
+        setQualityVisible(false);
         const { text, contentType } = await loadText(key);
         const kind = detectKind(key, contentType);
         cachedText = text;
@@ -412,8 +493,10 @@
         return;
       }
 
+      setQualityVisible(false);
       showBinaryFallback(key);
     } catch (err) {
+      if (err && err.name === 'AbortError') return;
       bodyEl.innerHTML = `<div class="preview-fallback"><p class="preview-error">${escHtml(String(err.message || err))}</p></div>`;
       if (typeof showStatus === 'function') {
         showStatus(String(err.message || err), true);
@@ -424,12 +507,18 @@
   }
 
   function closePreview() {
+    if (videoAbort) {
+      videoAbort.abort();
+      videoAbort = null;
+    }
     modal.hidden = true;
     document.body.classList.remove('preview-open');
     currentKey = null;
     cachedText = null;
+    videoKindOpen = false;
     bodyEl.innerHTML = '';
     setMdToggleVisible(false);
+    setQualityVisible(false);
     revokeObjectUrl();
   }
 
@@ -444,6 +533,16 @@
   downloadBtn.addEventListener('click', () => {
     if (currentKey) doDownload(currentKey);
   });
+  if (qualitySelect) {
+    qualitySelect.addEventListener('change', () => {
+      if (!currentKey || !videoKindOpen || modal.hidden) return;
+      const key = currentKey;
+      renderVideoPreview(key).catch((err) => {
+        if (err && err.name === 'AbortError') return;
+        bodyEl.innerHTML = `<div class="preview-fallback"><p class="preview-error">${escHtml(String(err.message || err))}</p></div>`;
+      });
+    });
+  }
   mdToggle.addEventListener('click', (e) => {
     const btn = e.target.closest('[data-md-mode]');
     if (!btn || !currentKey) return;

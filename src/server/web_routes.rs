@@ -35,6 +35,10 @@ pub fn router() -> Router<AppState> {
         .route("/api/v1/folders/rename", post(rename_folder))
         // axum 0.7 catch-all: /*key must be the final path segment.
         .route(
+            "/api/v1/objects/preview-video/*key",
+            get(web_preview_video),
+        )
+        .route(
             "/api/v1/objects/content/*key",
             get(web_get_object_content),
         )
@@ -73,6 +77,13 @@ async fn stats(State(state): State<AppState>, _auth: AuthAccount) -> Response {
 #[derive(Deserialize)]
 struct BucketQuery {
     bucket: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PreviewVideoQuery {
+    bucket: Option<String>,
+    /// Omit / original / 0 = full resolution; else 720|480|320|114.
+    height: Option<String>,
 }
 
 async fn objects(
@@ -289,6 +300,38 @@ async fn web_get_object_content(
             .into_response(),
         Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
     }
+}
+
+async fn web_preview_video(
+    State(state): State<AppState>,
+    auth: AuthAccount,
+    Path(raw_key): Path<String>,
+    Query(q): Query<PreviewVideoQuery>,
+) -> Response {
+    let key = match normalize_object_key(&raw_key) {
+        Ok(k) => k,
+        Err(msg) => return (StatusCode::BAD_REQUEST, msg).into_response(),
+    };
+    let height = match crate::server::ffmpeg::parse_preview_height(q.height.as_deref()) {
+        Ok(h) => h,
+        Err(msg) => return (StatusCode::BAD_REQUEST, msg).into_response(),
+    };
+    let (bucket_id, _) = match resolve_bucket_id(&state, q.bucket.as_deref()).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    if let Err(r) = require_bucket_perm(&state, auth.id(), bucket_id, CrudAction::Read).await {
+        return r;
+    }
+    let record = match repository::get_object_by_filename_in_bucket(&state.db, &key, bucket_id)
+        .await
+    {
+        Ok(Some(r)) => r,
+        Ok(None) => return (StatusCode::NOT_FOUND, "object not found").into_response(),
+        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    };
+    let path = state.engine.absolute_path_for(&record.filepath);
+    crate::server::ffmpeg::stream_preview_mp4(&path, height).await
 }
 
 async fn peers(State(state): State<AppState>, auth: AuthAccount) -> Response {

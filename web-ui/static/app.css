@@ -522,6 +522,29 @@ body.preview-open { overflow: hidden; }
   gap: 0.35rem;
 }
 
+.preview-quality-wrap select {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: var(--bg0);
+  color: var(--fg);
+  font-family: var(--font);
+  font-size: 0.85rem;
+  font-weight: 500;
+  padding: 0.45rem 1.75rem 0.45rem 0.7rem;
+  border-radius: 6px;
+  cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 14px) 55%, calc(100% - 9px) 55%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+.preview-quality-wrap select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(61, 155, 253, 0.2);
+}
+
 .preview-md-toggle {
   display: inline-flex;
   gap: 0.15rem;
@@ -829,6 +852,10 @@ body.preview-open { overflow: hidden; }
   margin-bottom: 0.75rem;
 }
 .recycle-selection-count {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.muted {
   color: var(--muted);
   font-size: 0.85rem;
 }

@@ -271,6 +271,29 @@
     </div>
   </div>
 
+  <div id="replication-dialog" class="ui-modal" hidden>
+    <div class="ui-modal-backdrop" data-replication-close tabindex="-1"></div>
+    <div class="ui-modal-panel" role="dialog" aria-modal="true" aria-labelledby="replication-dialog-title">
+      <form class="dialog-form" id="replication-form">
+        <h3 id="replication-dialog-title">Bucket replication</h3>
+        <input type="hidden" id="replication-bucket-id" />
+        <p class="ui-modal-message" id="replication-bucket-label"></p>
+        <label class="check-item">
+          <input type="checkbox" id="replication-all-nodes" />
+          Replicate to all cluster nodes
+        </label>
+        <p class="ui-modal-message" id="replication-peers-hint" hidden>
+          No cluster peers are registered yet. Seed peers via CLUSTER_PEERS or wait for heartbeat discovery.
+        </p>
+        <div class="check-list" id="replication-peer-checkboxes"></div>
+        <div class="dialog-actions">
+          <button type="button" class="btn ghost" id="replication-cancel">Cancel</button>
+          <button type="submit" class="btn primary">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <div id="row-menu" class="row-menu" hidden role="menu"></div>
 
   <div id="transfer-dock" class="transfer-dock" hidden>
@@ -311,6 +334,16 @@
             <button type="button" class="btn ghost active" data-md-mode="preview">Preview</button>
             <button type="button" class="btn ghost" data-md-mode="source">Source</button>
           </div>
+          <label class="preview-quality-wrap" id="preview-quality-wrap" hidden>
+            <span class="sr-only">Quality</span>
+            <select id="preview-quality" aria-label="Video quality">
+              <option value="original">Original</option>
+              <option value="720" selected>720p</option>
+              <option value="480">480p</option>
+              <option value="320">320p</option>
+              <option value="114">114p</option>
+            </select>
+          </label>
           <button type="button" class="btn ghost" id="preview-download">Download</button>
           <button type="button" class="btn ghost" id="preview-close" aria-label="Close preview">Close</button>
         </div>

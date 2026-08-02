@@ -269,6 +269,16 @@ fn session_cookie(token: &str, expires: chrono::DateTime<chrono::Utc>) -> String
     )
 }
 
+#[derive(Serialize)]
+struct BucketListItem {
+    id: i64,
+    name: String,
+    created_utc: chrono::DateTime<chrono::Utc>,
+    owner_account_id: Option<i64>,
+    replicate_to_all: bool,
+    can_edit_replication: bool,
+}
+
 async fn list_buckets(State(state): State<AppState>, auth: AuthAccount) -> Response {
     match rbac::list_buckets(&state.db).await {
         Ok(buckets) => {
@@ -276,7 +286,29 @@ async fn list_buckets(State(state): State<AppState>, auth: AuthAccount) -> Respo
             let mut out = Vec::new();
             for b in buckets {
                 match rbac::check_perm(&state.db, auth.id(), b.id, CrudAction::Read).await {
-                    Ok(true) => out.push(b),
+                    Ok(true) => {
+                        let can_edit_replication = match rbac::can_edit_bucket_replication(
+                            &state.db,
+                            auth.id(),
+                            b.id,
+                        )
+                        .await
+                        {
+                            Ok(v) => v,
+                            Err(err) => {
+                                return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+                                    .into_response();
+                            }
+                        };
+                        out.push(BucketListItem {
+                            id: b.id,
+                            name: b.name,
+                            created_utc: b.created_utc,
+                            owner_account_id: b.owner_account_id,
+                            replicate_to_all: b.replicate_to_all,
+                            can_edit_replication,
+                        });
+                    }
                     Ok(false) => {}
                     Err(err) => {
                         return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
@@ -409,6 +441,108 @@ async fn patch_bucket(
     }
 
     Json(bucket).into_response()
+}
+
+#[derive(Serialize)]
+struct PeerDirItem {
+    id: String,
+    endpoint: String,
+}
+
+#[derive(Serialize)]
+struct BucketReplicationView {
+    replicate_to_all: bool,
+    peer_ids: Vec<String>,
+    peers: Vec<PeerDirItem>,
+}
+
+#[derive(Deserialize)]
+struct PutBucketReplicationBody {
+    replicate_to_all: bool,
+    #[serde(default)]
+    peer_ids: Vec<String>,
+}
+
+async fn require_replication_editor(
+    state: &AppState,
+    account_id: i64,
+    bucket_id: i64,
+) -> Result<(), Response> {
+    match rbac::can_edit_bucket_replication(&state.db, account_id, bucket_id).await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err((
+            StatusCode::FORBIDDEN,
+            "bucket owner or edit permission required",
+        )
+            .into_response()),
+        Err(err) => Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()),
+    }
+}
+
+async fn get_bucket_replication(
+    State(state): State<AppState>,
+    auth: AuthAccount,
+    Path(id): Path<i64>,
+) -> Response {
+    if let Err(r) = require_replication_editor(&state, auth.id(), id).await {
+        return r;
+    }
+    let (replicate_to_all, peer_ids) = match repository::get_bucket_replication(&state.db, id).await
+    {
+        Ok(v) => v,
+        Err(err) => {
+            let msg = err.to_string();
+            if msg.contains("not found") {
+                return (StatusCode::NOT_FOUND, msg).into_response();
+            }
+            return (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response();
+        }
+    };
+    let peers = match repository::list_active_peers(&state.db).await {
+        Ok(rows) => rows
+            .into_iter()
+            .map(|p| PeerDirItem {
+                id: p.id,
+                endpoint: p.wireguard_endpoint,
+            })
+            .collect(),
+        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    };
+    Json(BucketReplicationView {
+        replicate_to_all,
+        peer_ids,
+        peers,
+    })
+    .into_response()
+}
+
+async fn put_bucket_replication(
+    State(state): State<AppState>,
+    auth: AuthAccount,
+    Path(id): Path<i64>,
+    Json(body): Json<PutBucketReplicationBody>,
+) -> Response {
+    if let Err(r) = require_replication_editor(&state, auth.id(), id).await {
+        return r;
+    }
+    match repository::set_bucket_replication(
+        &state.db,
+        id,
+        body.replicate_to_all,
+        &body.peer_ids,
+    )
+    .await
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => {
+            let msg = err.to_string();
+            if msg.contains("not found") {
+                (StatusCode::NOT_FOUND, msg).into_response()
+            } else {
+                (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response()
+            }
+        }
+    }
 }
 
 async fn list_account_directory(State(state): State<AppState>, _auth: AuthAccount) -> Response {

@@ -371,6 +371,7 @@
       const canRename = isBucketOwner && b.name !== 'storage';
       const canTransfer = isBucketOwner;
       const canDelete = isBucketOwner && b.name !== 'storage';
+      const canEditReplication = !!b.can_edit_replication;
       li.innerHTML = `
         <div class="bucket-meta">
           <span class="mono">${window.MyS3.esc(b.name)}</span>
@@ -380,6 +381,11 @@
         </div>
         <div class="actions">
           <button type="button" class="btn ghost" data-act="use">Use in explorer</button>
+          ${
+            canEditReplication
+              ? '<button type="button" class="btn ghost" data-act="repl">Settings</button>'
+              : ''
+          }
           ${
             canRename
               ? '<button type="button" class="btn ghost" data-act="rename">Rename</button>'
@@ -400,6 +406,14 @@
         window.MyS3.setBucket(b.name);
         location.hash = '#/explore/';
       });
+      const replBtn = li.querySelector('[data-act="repl"]');
+      if (replBtn) {
+        replBtn.addEventListener('click', () => {
+          openReplicationDialog(b).catch((e) =>
+            showSettingsStatus(String(e.message || e), true),
+          );
+        });
+      }
       const renameBtn = li.querySelector('[data-act="rename"]');
       if (renameBtn) {
         renameBtn.addEventListener('click', () => {
@@ -476,6 +490,53 @@
     if (!res.ok) throw new Error(await res.text());
     document.getElementById('new-bucket-name').value = '';
     await loadBuckets();
+  }
+
+  function closeReplicationDialog() {
+    const dlg = document.getElementById('replication-dialog');
+    dlg.hidden = true;
+    document.body.classList.remove('ui-modal-open');
+  }
+
+  function syncReplicationPeerUi() {
+    const all = document.getElementById('replication-all-nodes').checked;
+    const box = document.getElementById('replication-peer-checkboxes');
+    box.querySelectorAll('input[type="checkbox"]').forEach((el) => {
+      el.disabled = all;
+    });
+    box.style.opacity = all ? '0.55' : '1';
+  }
+
+  async function openReplicationDialog(bucket) {
+    const res = await api()(`/api/v1/buckets/${bucket.id}/replication`);
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    document.getElementById('replication-bucket-id').value = String(bucket.id);
+    document.getElementById('replication-bucket-label').textContent =
+      `Configure which cluster nodes receive objects from “${bucket.name}”.`;
+    const allEl = document.getElementById('replication-all-nodes');
+    allEl.checked = !!data.replicate_to_all;
+    const selected = new Set(data.peer_ids || []);
+    const box = document.getElementById('replication-peer-checkboxes');
+    box.innerHTML = '';
+    const peers = data.peers || [];
+    const hint = document.getElementById('replication-peers-hint');
+    hint.hidden = peers.length > 0;
+    for (const p of peers) {
+      const label = document.createElement('label');
+      label.className = 'check-item';
+      const checked = selected.has(p.id);
+      label.innerHTML = `<input type="checkbox" value="${window.MyS3.esc(p.id)}" ${
+        checked ? 'checked' : ''
+      }/> <span class="mono">${window.MyS3.esc(p.id)}</span> <span class="muted">${window.MyS3.esc(
+        p.endpoint || '',
+      )}</span>`;
+      box.appendChild(label);
+    }
+    syncReplicationPeerUi();
+    const dlg = document.getElementById('replication-dialog');
+    dlg.hidden = false;
+    document.body.classList.add('ui-modal-open');
   }
 
   function updateRecycleSelectionUi() {
@@ -632,6 +693,31 @@
     purgeRecycleIds(selectedRecycleIds()).catch((err) =>
       showSettingsStatus(String(err.message || err), true),
     );
+  });
+
+  document.getElementById('replication-cancel').addEventListener('click', closeReplicationDialog);
+  document.querySelector('[data-replication-close]').addEventListener('click', closeReplicationDialog);
+  document.getElementById('replication-all-nodes').addEventListener('change', syncReplicationPeerUi);
+  document.getElementById('replication-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const id = Number(document.getElementById('replication-bucket-id').value);
+    const replicate_to_all = document.getElementById('replication-all-nodes').checked;
+    const peer_ids = Array.from(
+      document.querySelectorAll('#replication-peer-checkboxes input:checked'),
+    ).map((el) => el.value);
+    try {
+      const res = await api()(`/api/v1/buckets/${id}/replication`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ replicate_to_all, peer_ids }),
+      });
+      if (!res.ok && res.status !== 204) throw new Error(await res.text());
+      closeReplicationDialog();
+      showSettingsStatus('Replication settings saved');
+      await loadBuckets();
+    } catch (err) {
+      showSettingsStatus(String(err.message || err), true);
+    }
   });
 
   window.MyS3Settings = {

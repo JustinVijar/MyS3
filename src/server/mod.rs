@@ -1,4 +1,5 @@
 pub mod auth_sigv4;
+pub mod ffmpeg;
 pub mod keys;
 pub mod purge;
 pub mod s3_routes;
