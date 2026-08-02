@@ -1,0 +1,65 @@
+syntax = "proto3";
+package replication;
+
+service ObjectReplicationService {
+    // Stream raw binary object payload + metadata to a replica node
+    rpc ReplicateObject (stream ObjectChunk) returns (ReplicationAck);
+
+    // Remove an object from a replica node
+    rpc DeleteObject (DeleteRequest) returns (ReplicationAck);
+
+    // Heartbeat & cluster topology discovery
+    rpc PingNode (NodeHeartbeat) returns (NodeHeartbeatAck);
+
+    // Anti-entropy reconciliation: compare object checksums
+    rpc SyncDigest (DigestRequest) returns (DigestResponse);
+}
+
+message ObjectChunk {
+    oneof content {
+        ObjectMetadata metadata = 1;
+        bytes payload = 2;
+    }
+}
+
+message ObjectMetadata {
+    string original_filename = 1;
+    string filepath_uuid = 2;
+    string file_format = 3;
+    int64 filesize_bytes = 4;
+    string etag_type = 5;
+    string etag = 6;
+    string date_uploaded = 7;
+    string date_modified = 8;
+    string bucket_name = 9;
+}
+
+message ReplicationAck {
+    bool success = 1;
+    string message = 2;
+    string etag_confirmed = 3;
+}
+
+message DeleteRequest {
+    string filepath_uuid = 1;
+    string etag = 2;
+}
+
+message NodeHeartbeat {
+    string node_id = 1;
+    string wireguard_ip = 2;
+    int64 timestamp = 3;
+}
+
+message NodeHeartbeatAck {
+    string node_id = 1;
+    bool healthy = 2;
+}
+
+message DigestRequest {
+    string bucket_or_prefix = 1;
+}
+
+message DigestResponse {
+    map<string, string> object_etags = 1; // filepath_uuid -> ETag
+}

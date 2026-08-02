@@ -1,0 +1,2 @@
+{"sessionId":"8f8fc4","runId":"post-fix","hypothesisId":"A","location":"settings.js:loadBuckets","message":"bucket list auth and owners","data":{"myId":1,"myIdType":"number","buckets":[{"id":1,"name":"storage","owner":1,"ownerType":"number","canDelete":false}]},"timestamp":1785649137780}
+{"sessionId":"8f8fc4","runId":"post-fix","hypothesisId":"A","location":"settings.js:loadBuckets","message":"bucket list auth and owners","data":{"myId":1,"myIdType":"number","buckets":[{"id":1,"name":"storage","owner":1,"ownerType":"number","canDelete":false}]},"timestamp":1785649412669}

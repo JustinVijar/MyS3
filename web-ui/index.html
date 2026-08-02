@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MyS3</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/vendor/github-dark.min.css" />
+  <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+  <div id="auth-gate" class="auth-gate" hidden>
+    <div class="auth-panel">
+      <a class="brand auth-brand" href="#/">MyS3</a>
+
+      <div id="auth-bootstrap" hidden>
+        <p class="auth-lead">Create the first owner account to get started. Hex credentials are shown once.</p>
+        <label class="field">
+          Display name
+          <input type="text" id="bootstrap-name" placeholder="Owner" autocomplete="nickname" />
+        </label>
+        <button type="button" class="btn primary" id="bootstrap-btn">Create owner</button>
+      </div>
+
+      <div id="auth-login" hidden>
+        <p class="auth-lead">Sign in with your hex username and password.</p>
+        <label class="field">
+          Username (hex)
+          <input type="text" id="login-user" class="mono-input" autocomplete="username" spellcheck="false" />
+        </label>
+        <label class="field">
+          Password (hex)
+          <input type="password" id="login-pass" class="mono-input" autocomplete="current-password" spellcheck="false" />
+        </label>
+        <button type="button" class="btn primary" id="login-btn">Sign in</button>
+      </div>
+
+      <div id="cred-reveal" class="cred-reveal" hidden>
+        <p class="auth-lead">Save these credentials now — they won’t be shown again.</p>
+        <label class="field">Username
+          <div class="copy-row">
+            <code id="cred-user"></code>
+            <button type="button" class="btn ghost" data-copy="cred-user">Copy</button>
+          </div>
+        </label>
+        <label class="field">Password
+          <div class="copy-row">
+            <code id="cred-pass"></code>
+            <button type="button" class="btn ghost" data-copy="cred-pass">Copy</button>
+          </div>
+        </label>
+        <button type="button" class="btn primary" id="cred-done">Continue</button>
+      </div>
+
+      <p class="status auth-status" id="auth-status" hidden></p>
+    </div>
+  </div>
+
+  <div id="app-shell" class="app-shell" hidden>
+    <header class="topbar">
+      <a class="brand" href="#/explore/" id="brand-link">MyS3</a>
+      <nav class="main-tabs" aria-label="Primary">
+        <a class="tab active" href="#/explore/" id="tab-explore">Explorer</a>
+        <a class="tab" href="#/settings/accounts" id="tab-settings">Settings</a>
+      </nav>
+      <div class="topbar-meta">
+        <span class="bucket-chip" id="bucket-chip">storage</span>
+        <button type="button" class="btn ghost" id="logout-btn">Log out</button>
+      </div>
+    </header>
+
+    <div id="view-explore" class="view explorer">
+      <nav class="breadcrumbs" id="breadcrumbs" aria-label="Location"></nav>
+
+      <div class="toolbar">
+        <label class="search-wrap">
+          <span class="sr-only">Search objects</span>
+          <input type="search" id="search" placeholder="Search objects…" autocomplete="off" />
+        </label>
+        <div class="toolbar-actions">
+          <input type="file" id="file-input" multiple hidden />
+          <input type="file" id="folder-input" webkitdirectory directory multiple hidden />
+          <button type="button" class="btn ghost" id="new-folder-btn">New folder</button>
+          <div class="upload-menu-wrap">
+            <button
+              type="button"
+              class="btn primary"
+              id="upload-btn"
+              aria-haspopup="menu"
+              aria-expanded="false"
+              aria-controls="upload-menu"
+            >
+              Upload
+              <span class="upload-caret" aria-hidden="true">▾</span>
+            </button>
+            <div id="upload-menu" class="upload-menu" hidden role="menu">
+              <button type="button" class="upload-menu-item" role="menuitem" data-upload="files">
+                Upload files
+              </button>
+              <button type="button" class="upload-menu-item" role="menuitem" data-upload="folder">
+                Upload folder
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="filter-bar" id="filter-bar" role="group" aria-label="Filter by type">
+        <button type="button" class="filter-chip active" data-filter="all">All</button>
+        <button type="button" class="filter-chip" data-filter="folders">Folders</button>
+        <button type="button" class="filter-chip" data-filter="images">Images</button>
+        <button type="button" class="filter-chip" data-filter="video">Video</button>
+        <button type="button" class="filter-chip" data-filter="audio">Audio</button>
+        <button type="button" class="filter-chip" data-filter="text">Text</button>
+        <button type="button" class="filter-chip" data-filter="other">Other</button>
+      </div>
+
+      <div class="panel-actions explorer-bulk-actions" id="explorer-bulk-actions" hidden>
+        <button type="button" class="btn ghost" id="explorer-download-selected" disabled>Download</button>
+        <button type="button" class="btn ghost danger" id="explorer-delete-selected" disabled>Delete</button>
+        <span class="recycle-selection-count" id="explorer-selection-count"></span>
+      </div>
+
+      <p class="status" id="status" hidden></p>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th class="col-check">
+                <input type="checkbox" id="listing-select-all" title="Select all" aria-label="Select all" />
+              </th>
+              <th class="col-name">Name</th>
+              <th class="col-size">Size</th>
+              <th class="col-modified">Last modified</th>
+              <th class="col-etag">ETag</th>
+              <th class="col-actions"></th>
+            </tr>
+          </thead>
+          <tbody id="listing-body"></tbody>
+        </table>
+        <p class="empty" id="empty-state" hidden>No objects here. Upload a file to get started.</p>
+      </div>
+    </div>
+
+    <div id="view-settings" class="view settings" hidden>
+      <nav class="settings-nav" aria-label="Settings">
+        <a href="#/settings/accounts" data-panel="accounts">Accounts</a>
+        <a href="#/settings/roles" data-panel="roles">Roles</a>
+        <a href="#/settings/buckets" data-panel="buckets">Buckets</a>
+        <a href="#/settings/recycle" data-panel="recycle">Recycle bin</a>
+      </nav>
+      <div class="settings-body">
+        <p class="status" id="settings-status" hidden></p>
+
+        <section id="panel-accounts" class="settings-panel" hidden>
+          <div class="panel-head">
+            <h2>Accounts</h2>
+            <p>Manage members and hex credentials. Passwords are shown once at create or regenerate.</p>
+          </div>
+          <div class="panel-actions">
+            <button type="button" class="btn primary" id="create-account-btn">Create account</button>
+          </div>
+          <div class="table-wrap tight">
+            <table>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Username</th>
+                  <th>Roles</th>
+                  <th>Status</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="accounts-body"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="panel-roles" class="settings-panel" hidden>
+          <div class="panel-head">
+            <h2>Roles</h2>
+            <p>Discord-style roles with per-bucket create / read / update / delete grants.</p>
+          </div>
+          <div class="panel-actions">
+            <input type="text" id="new-role-name" placeholder="Role name" />
+            <button type="button" class="btn primary" id="create-role-btn">Create role</button>
+          </div>
+          <div class="roles-list" id="roles-list"></div>
+          <div class="perm-matrix" id="perm-matrix"></div>
+        </section>
+
+        <section id="panel-buckets" class="settings-panel" hidden>
+          <div class="panel-head">
+            <h2>Buckets</h2>
+            <p>Create buckets and switch the explorer to the active bucket.</p>
+          </div>
+          <div class="panel-actions">
+            <input type="text" id="new-bucket-name" placeholder="bucket-name" />
+            <button type="button" class="btn primary" id="create-bucket-btn">Create bucket</button>
+          </div>
+          <ul class="bucket-list" id="bucket-list"></ul>
+        </section>
+
+        <section id="panel-recycle" class="settings-panel" hidden>
+          <div class="panel-head">
+            <h2>Recycle bin</h2>
+            <p>Soft-deleted objects are retained until purge. Restore or delete forever.</p>
+          </div>
+          <form id="retention-form" class="retention-form" hidden>
+            <label class="field inline">
+              Keep for
+              <input type="number" id="retention-value" min="1" step="1" />
+            </label>
+            <label class="field inline">
+              <select id="retention-unit">
+                <option value="second">seconds</option>
+                <option value="minute">minutes</option>
+                <option value="hour">hours</option>
+                <option value="day">days</option>
+                <option value="month">months</option>
+                <option value="year">years</option>
+                <option value="decade">decades</option>
+              </select>
+            </label>
+            <button type="submit" class="btn primary">Save retention</button>
+          </form>
+          <div class="panel-actions recycle-actions" id="recycle-bulk-actions" hidden>
+            <button type="button" class="btn ghost danger" id="recycle-delete-selected" disabled>
+              Delete selected
+            </button>
+            <span class="recycle-selection-count" id="recycle-selection-count"></span>
+          </div>
+          <div class="table-wrap tight">
+            <table>
+              <thead>
+                <tr>
+                  <th class="col-check">
+                    <input type="checkbox" id="recycle-select-all" title="Select all" aria-label="Select all" />
+                  </th>
+                  <th>Name</th>
+                  <th>Bucket</th>
+                  <th>Deleted</th>
+                  <th>Size</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="recycle-body"></tbody>
+            </table>
+            <p class="empty" id="recycle-empty" hidden>Recycle bin is empty.</p>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <div id="roles-dialog" class="ui-modal" hidden>
+    <div class="ui-modal-backdrop" data-roles-close tabindex="-1"></div>
+    <div class="ui-modal-panel" role="dialog" aria-modal="true" aria-labelledby="roles-dialog-title">
+      <form class="dialog-form" id="roles-form">
+        <h3 id="roles-dialog-title">Assign roles</h3>
+        <input type="hidden" id="roles-account-id" />
+        <div class="check-list" id="roles-checkboxes"></div>
+        <div class="dialog-actions">
+          <button type="button" class="btn ghost" id="roles-cancel">Cancel</button>
+          <button type="submit" class="btn primary">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="row-menu" class="row-menu" hidden role="menu"></div>
+
+  <div id="transfer-dock" class="transfer-dock" hidden>
+    <div class="transfer-dock-main">
+      <div class="transfer-dock-info">
+        <strong id="transfer-summary">Transfers</strong>
+        <span id="transfer-count" class="transfer-count">0/0 objects</span>
+        <span id="transfer-eta" class="transfer-eta">ETA —</span>
+      </div>
+      <div class="transfer-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <i id="transfer-bar"></i>
+      </div>
+      <div class="transfer-dock-actions">
+        <button type="button" class="btn ghost" id="transfer-expand" aria-expanded="false">Details</button>
+        <button type="button" class="btn ghost danger" id="transfer-cancel-all">Cancel all</button>
+        <button type="button" class="btn ghost" id="transfer-dismiss" hidden>Dismiss</button>
+      </div>
+    </div>
+    <div id="transfer-list" class="transfer-list" hidden></div>
+  </div>
+
+  <div id="ui-modal" class="ui-modal" hidden>
+    <div class="ui-modal-backdrop" data-ui-modal-close tabindex="-1"></div>
+    <div class="ui-modal-panel" role="dialog" aria-modal="true" aria-labelledby="ui-modal-title">
+      <h3 id="ui-modal-title"></h3>
+      <div id="ui-modal-body"></div>
+      <div id="ui-modal-actions" class="dialog-actions"></div>
+    </div>
+  </div>
+
+  <div id="preview-modal" class="preview-modal" hidden>
+    <div class="preview-backdrop" data-preview-close tabindex="-1"></div>
+    <div class="preview-dialog" role="dialog" aria-modal="true" aria-labelledby="preview-title">
+      <header class="preview-header">
+        <h2 id="preview-title" class="preview-title">Preview</h2>
+        <div class="preview-toolbar">
+          <div class="preview-md-toggle" id="preview-md-toggle" hidden>
+            <button type="button" class="btn ghost active" data-md-mode="preview">Preview</button>
+            <button type="button" class="btn ghost" data-md-mode="source">Source</button>
+          </div>
+          <button type="button" class="btn ghost" id="preview-download">Download</button>
+          <button type="button" class="btn ghost" id="preview-close" aria-label="Close preview">Close</button>
+        </div>
+      </header>
+      <div class="preview-body" id="preview-body"></div>
+    </div>
+  </div>
+
+  <script src="/static/vendor/highlight.min.js"></script>
+  <script src="/static/vendor/marked.min.js"></script>
+  <script src="/static/vendor/purify.min.js"></script>
+  <script src="/static/dialog.js"></script>
+  <script src="/static/app.js"></script>
+  <script src="/static/transfer.js"></script>
+  <script src="/static/settings.js"></script>
+  <script src="/static/preview.js"></script>
+</body>
+</html>

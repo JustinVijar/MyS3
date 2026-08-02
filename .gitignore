@@ -1,0 +1,4 @@
+/target/
+/.data/
+*.png
+.DS_Store
